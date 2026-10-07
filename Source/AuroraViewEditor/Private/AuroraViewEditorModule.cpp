@@ -292,6 +292,7 @@ FAuroraViewReply FAuroraViewReply::Failure(FString Name, FString Message, FStrin
     Result.ErrorCode = MoveTemp(Code);
     return Result;
 }
+FAuroraViewEditorModule::FAuroraViewEditorModule() = default;
 FAuroraViewEditorModule::~FAuroraViewEditorModule() = default;
 
 void FAuroraViewEditorModule::StartupModule()

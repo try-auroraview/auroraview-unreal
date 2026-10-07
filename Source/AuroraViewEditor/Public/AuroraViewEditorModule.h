@@ -23,6 +23,7 @@ using FAuroraViewHandler = TFunction<FAuroraViewReply(const TSharedPtr<FJsonValu
 class AURORAVIEWEDITOR_API FAuroraViewEditorModule final : public IModuleInterface
 {
 public:
+    FAuroraViewEditorModule();
     virtual ~FAuroraViewEditorModule() override;
     virtual void StartupModule() override;
     virtual void ShutdownModule() override;

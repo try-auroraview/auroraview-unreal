@@ -1,0 +1,9 @@
+{
+  "status": "blocked",
+  "unreal_compile": "not_run",
+  "unreal_ui": "not_run",
+  "intended_source_target": "UE 5.7 Win64 Editor (experimental)",
+  "blockers": [
+    "No actual Unreal Engine root was supplied or verified"
+  ]
+}

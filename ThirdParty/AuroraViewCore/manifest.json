@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/try-auroraview/auroraview",
+  "commit": "11b3a29ad95a46cb22aaa604614de16da16bfc22",
+  "license": "MIT",
+  "files": {
+    "event_bridge.js": {
+      "source": "crates/auroraview-core/src/assets/js/core/event_bridge.js",
+      "sha256": "4550b027e400c6500fca5e64dd8c50348bde15848c513d2738dd6e443b4a17ff"
+    },
+    "bridge_stub.js": {
+      "source": "crates/auroraview-core/src/assets/js/core/bridge_stub.js",
+      "sha256": "0bb295640f39a6c831583d74602876a35eafa82e342ada5c18325d021dcc15cb"
+    }
+  }
+}

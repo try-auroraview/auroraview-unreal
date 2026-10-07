@@ -1,10 +1,25 @@
 # Verification matrix
 
+## Historical public baseline
+
+The matrix and build progression below preserve the public baseline evidence.
+They do not validate any native showcase follow-up feature. The publication base
+is `934fa5301a3e78ca0e41bf3890b0cc991c239e11` (tree
+`2ad6955855e990f3d8120fec641ec38954743972`), including the stricter JSON-type guard;
+its UE 5.7.4 UAT/UBT/wrapper and complete-package verification passed, while
+the three corrected strict-type CEF checks still await an Editor rerun.
+
 Source/transport checks were rerun on 2026-10-07. Actual UE 5.7.4 Win64 build
 and complete-package verification passed at
 [6eb8fbd](https://github.com/try-auroraview/auroraview-unreal/commit/6eb8fbd44af951a8812a6df473e83d7a2adc96c5).
-Editor/CEF execution remains untested. Earlier stress/sanitizer evidence is
-retained with its original scope. Never substitute source or build checks for
+The first real graphical `BridgeRoundTrip` at `6eb8fbd` passed readiness, echo and
+GameThread assertions but failed its aggregated malformed-type assertion. A
+later independent Editor exit hit an Array assertion with an unresolved cause.
+The stricter source at
+[`934fa530`](https://github.com/try-auroraview/auroraview-unreal/commit/934fa5301a3e78ca0e41bf3890b0cc991c239e11)
+passed UE 5.7.4 UAT/UBT/wrapper and complete-package verification; its corrected
+missing/empty/numeric-type CEF rerun remains pending. Earlier stress/sanitizer
+evidence is retained with its original scope. Never substitute source or build checks for
 native Editor execution.
 
 | Gate | Status | Evidence / required result |
@@ -20,12 +35,12 @@ native Editor execution.
 | Actual upstream bridge + UE transport contracts | pass | 25 Node 24.19.0 VM cases, including actual startup order and ready failures |
 | Exact engine/platform and build identity | pass | UE 5.7.4 Win64; engine BuildId and produced DLL hash verified |
 | UHT reflected endpoint generation | pass | Four generated files in the actual UE 5.7.4 run |
-| UBT Win64 Editor plugin compile/link/package | pass | Nine compile/link/metadata actions; UBT, UAT and wrapper exited 0 |
-| Packaged runtime assets and license notices | pass | Nine final resource hashes matched; all five runtime file-read paths covered |
-| Real Editor visible native view | not_run | Open demo; screenshot with Editor chrome and bridge ready |
-| Actual CEF → UObject → GameThread → CEF round trip | not_run | `AuroraView.Editor.BridgeRoundTrip` must pass |
-| Native invalid-type structured error path | not_run | Added to real Editor smoke; cloud only checked source guard |
-| Host result, structured error, Unicode/escaped JSON | not_run | Demo + additional typed host calls |
+| UBT Win64 Editor plugin compile/link/package | pass (baseline only) | `6eb8fbd` completed nine compile/link/metadata actions; strict-type `934fa530` also passed UE 5.7.4 UBT, UAT and wrapper |
+| Packaged runtime assets and license notices | pass (baseline only) | `6eb8fbd`: nine resource hashes matched and five runtime reads covered; the corrected `934fa530` complete package was also verified |
+| Real graphical Editor / CEF view | partial | Graphical `6eb8fbd` smoke reached actual native bridge readiness; complete visual/lifecycle acceptance remains pending |
+| Actual CEF → UObject → GameThread → CEF round trip | partial | `6eb8fbd` readiness, echo and GameThread assertions passed; the overall smoke failed its malformed-type aggregate |
+| Native invalid-type structured error path | failed at `6eb8fbd`; corrected rerun pending | Aggregated malformed-type assertion failed; `934fa530` missing/empty/numeric-type checks await actual CEF rerun |
+| Host result, structured error, Unicode/escaped JSON | partial | Native echo passed at `6eb8fbd`; malformed-type aggregate failed; corrected error cases and Unicode/escaped JSON need further native checks |
 | Hide/show preserve one browser and correct visibility/focus | not_run | Repeat 20 times; no extra process/window growth |
 | Titlebar close / programmatic close / close before ready | not_run | No crash, stale callbacks or queued host mutation |
 | Same-ID reopen | not_run | Repeat 20 times; new generation/token; handlers retained once |
@@ -41,7 +56,7 @@ native Editor execution.
 | Bound bool future shape and callback ordering | not_run | Real native true/false/rejection before and after RPC result |
 | Browser self-close / renderer termination | not_run | Detect and recover stale ready state; no health guarantee yet |
 | Disable/re-enable plugin with pending calls | not_run | Restart boundary; no claim of hot DLL unload support |
-| Module shutdown cleanup | not_run | Ticker/delegates/bindings/CEF references released |
+| Module shutdown cleanup | unresolved | A later independent Editor exit hit an Array assertion; cause unknown and no clean-shutdown claim. Cleanup of ticker/delegates/bindings/CEF still needs verification |
 | Host exit while calls are queued | not_run | No hang, UAF, host API after exit or leftover owned window |
 | Actual UE memory/CEF leak check | not_run | Track native resources across open/close cycles |
 | GC pressure during pending UObject calls / nonblocking close | not_run | Requires actual engine binding ownership and teardown evidence |
@@ -55,13 +70,17 @@ native Editor execution.
 - Second correction: declare the constructor publicly and default it after FImpl is complete; retain the out-of-line destructor
 - The following native compile/link/UAT run exited 0, but its package omitted required Core bridge assets and notices
 - Third correction: Config/FilterPlugin.ini explicitly includes the Core assets, root license and the filter itself
-- A fresh complete run at 6eb8fbd passed UHT/build/link/package and independent source/output/resource hash checks; its process exited normally
+- A fresh complete run at 6eb8fbd passed UHT/build/link/package and independent source/output/resource hash checks; its build process exited normally
+- The first real graphical BridgeRoundTrip at 6eb8fbd passed readiness/echo/GameThread assertions but failed the aggregated malformed-type assertion
+- A later independent Editor exit hit an Array assertion; its cause remains unresolved and is not attributed to the malformed-type failure
+- The strict-type correction at 934fa530 passed UE 5.7.4 UAT/UBT/wrapper and complete-package verification; the three corrected CEF negative cases remain pending
 
 The known WriteMetadata `Invalid args` LogWarning is retained in the evidence;
 this is not a warning-free-build claim. No existing output package was manually
-patched. No graphical Editor, actual CEF RPC, GC or native lifecycle test has
-passed yet. The source checks and Node/C++ transport fixtures do not replace
-those remaining gates.
+patched. The baseline's successful readiness/echo/GameThread assertions do not
+turn its failed aggregate smoke into a pass. GC, full native lifecycle and clean
+Editor shutdown remain unverified. Source checks and Node/C++ transport fixtures
+do not replace the pending corrected CEF rerun or these remaining gates.
 
 ## Execution order for the future real-engine owner
 
@@ -89,3 +108,18 @@ those remaining gates.
   already admitted to the queue; do not promise timeout-based side-effect rollback
 - The default sample only exposes read-only/echo diagnostic methods. Registering
   destructive editor methods requires its own explicit application design
+
+## Native follow-up stage 1
+
+This stage adds native dock ownership, isolated private layouts and the reviewed
+callback/failed-tab lifecycle repairs. Native Assets/Outliner content and custom
+drag surfaces are not included yet.
+
+- Exact-stage UHT generation and clean UE 5.7 Win64 compile/link/package: `not_run`
+- Exact-stage graphical Editor/CEF and authored native Automation tests: `not_run`
+- Dock/sidebar/private-layout interactions, shutdown and retained-resource checks: `not_run`
+- Cross-window focus and Chinese IME: blocked/unverified pending installed-engine evidence
+
+Run the source-safe suite with `bash scripts/check.sh`. Its tests do not execute
+Unreal. Preserve source identity, actual build logs and graphical native evidence
+separately for this stage. See [the native stage plan](native-showcase.md).

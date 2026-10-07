@@ -1,12 +1,29 @@
 # AuroraView Unreal Editor source candidate
 
-**Experimental source candidate: UE 5.7.4 / Win64 native build and package checks passed; actual Editor UI remains `not_run`.**
+**Native follow-up stage 1: new UHT/UBT/package and Editor runtime gates are `not_run`.**
+
+This stage adds native dock ownership, isolated private layouts and the reviewed
+callback/failed-tab lifecycle repairs. Native Assets/Outliner content and custom
+drag surfaces are not included yet.
+See [this stage’s native scope and acceptance](docs/native-showcase.md).
+
+**Historical baseline evidence: UE 5.7.4 / Win64 build/package checks passed at `6eb8fbd` and `934fa530`; the first real graphical smoke at `6eb8fbd` had mixed results.**
 This is reviewable source, not a supported binary or a completed Unreal release.
 No precompiled Unreal binary or stable release is included. The verified build
 used [source commit 6eb8fbd](https://github.com/try-auroraview/auroraview-unreal/commit/6eb8fbd44af951a8812a6df473e83d7a2adc96c5).
 UHT, C++ compilation, DLL linking and UAT packaging completed successfully.
 Required bridge assets and license notices were hash-checked in the final package.
-Real CEF rendering/RPC, lifecycle, GC and Editor shutdown acceptance are still pending.
+The first real graphical `AuroraView.Editor.BridgeRoundTrip` run at `6eb8fbd`
+passed native bridge readiness, echo and GameThread assertions, but its aggregated
+malformed-type assertion failed. A later independent Editor exit hit an Array
+assertion; its cause is unresolved, so clean shutdown is not claimed.
+
+The stricter JSON-type source at
+[`934fa530`](https://github.com/try-auroraview/auroraview-unreal/commit/934fa5301a3e78ca0e41bf3890b0cc991c239e11)
+subsequently passed UE 5.7.4 UAT/UBT/wrapper and complete-package verification.
+The corrected missing/empty/numeric-type CEF checks still await a real Editor
+rerun. Broader lifecycle, GC and shutdown acceptance remain pending. None of
+these baseline results validates the new native follow-up features.
 See the [verification matrix](docs/acceptance.md).
 
 ## What is here

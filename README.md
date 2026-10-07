@@ -31,7 +31,7 @@ The shared control surface discovers loaded worlds, actors, objects, properties 
 3. Nine real graphical Editor Automation tests: `scripts/validate_editor.ps1`.
 4. Actual BuildCookRun, staged Game identity, native reflection, external Python tools, events and normal process exit: `scripts/validate_game.ps1`.
 
-The Game validator uses NullRHI; rendered Game CEF acceptance is a separate gate. Manual docking/drag destination behavior also remains separate. See [version policy](docs/version-validation.md), [architecture](docs/architecture.md), [acceptance history](docs/acceptance.md) and [native showcase](docs/native-showcase.md).
+The Game validator runs headlessly with NullRHI, except UE 5.5 uses offscreen D3D11 to avoid an engine Nanite shutdown fault. Rendered Game CEF acceptance is a separate gate. Manual docking/drag destination behavior also remains separate. See [version policy](docs/version-validation.md), [architecture](docs/architecture.md), [acceptance history](docs/acceptance.md) and [native showcase](docs/native-showcase.md).
 
 The original AuroraView Core assets stay byte-for-byte pinned to `11b3a29ad95a46cb22aaa604614de16da16bfc22`, with MIT notice and SHA-256 manifest. UE4's Chromium 59 uses reproducibly generated legacy bundles; UE5 uses the original assets. The engine supplies its own CEF binaries. DLLs cannot be shared across engine minors, BuildIds or architectures. Dynamic module reload remains disabled.
 

@@ -413,6 +413,18 @@ def validate_browser(client, process, timeout):
                 pass  # The outer validator still records the original failed gate.
 
 
+def game_execution_policy(engine_version, rendered_browser):
+    if rendered_browser:
+        return 'rendered_browser', ['-Windowed', '-ResX=640', '-ResY=480']
+    if engine_version == '5.5':
+        # Stock UE5.5 NullRHI can release Nanite's GPUMessage socket after its
+        # owner during CRT teardown. An initialized offscreen RHI exits cleanly.
+        return 'offscreen_d3d11', [
+            '-RenderOffscreen', '-d3d11', '-AllowSoftwareRendering',
+            '-Windowed', '-ResX=64', '-ResY=64']
+    return 'null_rhi', ['-NullRHI']
+
+
 def run_game(executable, evidence, engine_version, timeout, rendered_browser=False):
     sys.path.insert(0, str(ROOT / 'python'))
     from auroraview_unreal import Client, ProtocolError, RemoteError
@@ -425,11 +437,13 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
     command = [str(executable), '-Unattended', '-NoSound', '-NoSplash',
                '-AuroraViewAllowControl', '-AuroraViewHostPort=' + str(port),
                '-AuroraViewHostToken=' + token, '-abslog=' + str(game_log), '-stdout', '-FullStdOutLogOutput']
-    command += ['-Windowed', '-ResX=640', '-ResY=480'] if rendered_browser else ['-NullRHI']
+    execution_mode, graphics_arguments = game_execution_policy(engine_version, rendered_browser)
+    command += graphics_arguments
     result = {'started_utc': now(), 'executable': str(executable),
               'arguments': [arg.replace(token, '<redacted>') for arg in command[1:]],
               'actions': {}, 'pid': None, 'exit_code': None, 'forced_cleanup': False,
-              'rendered_browser': 'failed' if rendered_browser else 'not_run'}
+              'rendered_browser': 'failed' if rendered_browser else 'not_run',
+              'execution_mode': execution_mode}
     process = None
     client = None
     try:

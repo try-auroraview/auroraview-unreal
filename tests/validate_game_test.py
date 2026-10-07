@@ -456,5 +456,31 @@ class RenderedBrowserGuards(unittest.TestCase):
             self.gate(client)
 
 
+class GameExecutionPolicyTests(unittest.TestCase):
+    def test_ue55_headless_acceptance_initializes_an_offscreen_rhi(self):
+        mode, arguments = validator.game_execution_policy('5.5', False)
+        self.assertEqual(mode, 'offscreen_d3d11')
+        self.assertIn('-RenderOffscreen', arguments)
+        self.assertIn('-d3d11', arguments)
+        self.assertIn('-AllowSoftwareRendering', arguments)
+        self.assertNotIn('-NullRHI', arguments)
+
+    def test_other_admitted_versions_preserve_null_rhi_acceptance(self):
+        for version in ['4.18', '4.26', '5.7', '5.8']:
+            with self.subTest(version=version):
+                mode, arguments = validator.game_execution_policy(version, False)
+                self.assertEqual(mode, 'null_rhi')
+                self.assertEqual(arguments, ['-NullRHI'])
+
+    def test_rendered_browser_gate_remains_interactive_for_every_version(self):
+        for version in ['4.18', '4.26', '5.5', '5.7', '5.8']:
+            with self.subTest(version=version):
+                mode, arguments = validator.game_execution_policy(version, True)
+                self.assertEqual(mode, 'rendered_browser')
+                self.assertIn('-Windowed', arguments)
+                self.assertNotIn('-NullRHI', arguments)
+                self.assertNotIn('-RenderOffscreen', arguments)
+
+
 if __name__ == '__main__':
     unittest.main()

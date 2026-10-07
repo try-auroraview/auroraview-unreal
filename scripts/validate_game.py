@@ -99,6 +99,8 @@ def create_project(root, package, version):
         settings = '        DefaultBuildSettings = BuildSettingsVersion.V2;\n'
     source = root / 'Source' / PROJECT
     source.mkdir(parents=True)
+    # UE4.18 staging enumerates Content even when the fixture cooks only Entry.
+    (root / 'Content').mkdir()
     plugins = root / 'Plugins'
     plugins.mkdir()
     shutil.copytree(package, plugins / 'AuroraView')
@@ -176,9 +178,9 @@ def run_logged(command, working, log, environment, timeout):
             write_json(path, process_receipt)
 
 
-def editor_command(engine, project, policy):
+def editor_command(engine, project, policy, log_file):
     command = [str(engine / 'Engine/Build/BatchFiles/Build.bat'), PROJECT + 'Editor',
-               'Win64', 'Development', '-Project=' + str(project), '-NoHotReload']
+               'Win64', 'Development', '-Project=' + str(project), '-NoHotReload', '-log=' + str(log_file)]
     if policy['version'] != '4.18':
         # Outputs belong to this disposable project. No engine or loaded project
         # DLL is replaced, even when another Editor has its Live Coding mutex.
@@ -554,7 +556,7 @@ def validate(engine_root, package_root, output_root, timeout, rendered_browser=F
         environment = os.environ.copy()
         environment.update(overrides)
         before_config = build_plugin.configuration_inputs(engine)
-        prepare_command = editor_command(engine, project / f'{PROJECT}.uproject', policy)
+        prepare_command = editor_command(engine, project / f'{PROJECT}.uproject', policy, output / 'ubt-editor.log')
         result.update(environment_overrides=overrides, ubt_configuration_sha256=before_config,
                       editor_build_command=prepare_command, build_command=command, packaged_game='failed')
         write_json(result_path, result)

@@ -9,8 +9,11 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "Runtime/Launch/Resources/Version.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
 
 UAuroraViewPrepareCommandlet::UAuroraViewPrepareCommandlet(const FObjectInitializer& ObjectInitializer)
     : Super(ObjectInitializer)
@@ -40,8 +43,25 @@ int32 UAuroraViewPrepareCommandlet::Main(const FString& Params)
         return 2;
     }
     IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename), true);
+    bool bSaved = false;
+#if ENGINE_MAJOR_VERSION == 4 && ENGINE_MINOR_VERSION == 18
+    // UE4.18's map helper requires GUI editor state, even in a commandlet.
+    // Build an independent world and save its package without replacing GWorld.
+    UPackage* Package = CreatePackage(nullptr, *Map);
+    UWorld* World = Package ? UWorld::CreateWorld(EWorldType::Editor, false,
+        FName(*FPackageName::GetLongPackageAssetName(Map)), Package, true) : nullptr;
+    if (World)
+    {
+        World->SetFlags(RF_Public | RF_Standalone);
+        bSaved = UPackage::SavePackage(Package, World, RF_NoFlags, *Filename,
+            GWarn, nullptr, false, false, SAVE_None, nullptr, FDateTime::MinValue(), false);
+        World->DestroyWorld(false);
+    }
+#else
     UWorld* World = GEditor->NewMap();
-    if (!World || !UEditorLoadingAndSavingUtils::SaveMap(World, Map) || IFileManager::Get().FileSize(*Filename) <= 0)
+    bSaved = World && UEditorLoadingAndSavingUtils::SaveMap(World, Map);
+#endif
+    if (!bSaved || IFileManager::Get().FileSize(*Filename) <= 0)
     {
         UE_LOG(LogTemp, Error, TEXT("Could not create and save the native acceptance map"));
         return 3;

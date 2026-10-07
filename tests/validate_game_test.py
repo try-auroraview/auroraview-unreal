@@ -140,8 +140,10 @@ class PackagedGameGuards(unittest.TestCase):
             self.assertIn('-nocompileeditor', command)
             self.assertNotIn('-VS2019', command)
             self.assertEqual('-ubtargs=-2019 -NoHotReloadFromIDE' in command, policy['version'] == '4.26')
-            editor = validator.editor_command(self.engine, self.project / 'Fixture.uproject', policy)
+            editor = validator.editor_command(self.engine, self.project / 'Fixture.uproject', policy,
+                                              self.root / 'ubt-editor.log')
             self.assertIn(validator.PROJECT + 'Editor', editor)
+            self.assertIn('-log=' + str(self.root / 'ubt-editor.log'), editor)
             self.assertEqual('-2019' in editor, policy['version'] == '4.26')
             self.assertEqual('-NoHotReloadFromIDE' in editor, policy['version'] != '4.18')
 
@@ -151,6 +153,7 @@ class PackagedGameGuards(unittest.TestCase):
         for version in validator.preflight_engine.SUPPORTED_VERSIONS:
             root = self.root / version
             validator.create_project(root, package, version)
+            self.assertTrue((root / 'Content').is_dir())
             for suffix in ['.Target.cs', 'Editor.Target.cs']:
                 text = (root / 'Source' / f'{validator.PROJECT}{suffix}').read_text()
                 self.assertNotIn('bOverrideBuildEnvironment', text)

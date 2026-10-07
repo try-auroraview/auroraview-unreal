@@ -92,8 +92,11 @@ class BuildPluginTests(unittest.TestCase):
         (engine / 'Engine/Binaries/ThirdParty/CEF3/Win64').mkdir(parents=True)
         write(engine / 'Engine/Binaries/Win64/UnrealEditor.modules',
               json.dumps({'BuildId': 'fixture-engine-build', 'Modules': {}}))
+        # The template's .git directory is copied below; background maintenance
+        # must not create/remove lock files while copytree enumerates it.
         for arguments in [('init', '--quiet'), ('config', 'user.name', 'loonghao'),
-                          ('config', 'user.email', 'hal.long@outlook.com'), ('add', '.'),
+                          ('config', 'user.email', 'hal.long@outlook.com'),
+                          ('config', 'maintenance.auto', 'false'), ('config', 'gc.auto', '0'), ('add', '.'),
                           ('commit', '--quiet', '-m', 'test: create synthetic build fixture')]:
             subprocess.run(['git', '-C', str(source), *arguments],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)

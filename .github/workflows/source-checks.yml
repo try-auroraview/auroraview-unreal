@@ -1,0 +1,35 @@
+name: Source contracts (no Unreal build)
+
+on:
+  push:
+    branches: [main, candidate/**]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-contracts:
+    name: Static, mailbox and bridge checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Record source-check toolchain
+        shell: bash
+        run: |
+          python3 --version
+          c++ --version
+          node --version
+      - name: Check source and transport contracts
+        shell: bash
+        run: bash scripts/check.sh
+      - name: State native verification boundary
+        shell: bash
+        run: |
+          echo '### Source checks only' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This job does not run UHT, UBT, CEF, or the Unreal Editor.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Native support remains experimental and unverified.' >> "$GITHUB_STEP_SUMMARY"

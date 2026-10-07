@@ -15,6 +15,7 @@
 #include "Misc/EngineVersion.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "SWebBrowser.h"
@@ -85,6 +86,32 @@ struct FSession final : TSharedFromThis<FSession>
     bool bDockRegistered = false;
     bool bDisposing = false;
     uint64 TabEpoch = 0, DockRequest = 0;
+    TSharedPtr<FTabSpawnerEntry> DockSpawner;
+    int32 DockInvocationDepth = 0;
+    TArray<TFunction<void()>> PendingDockTeardown;
+
+    void RetireDockSpawner()
+    {
+        if (!bDockRegistered) return;
+        bDockRegistered = false;
+        const auto Retire = [Id = DockId, Spawner = MoveTemp(DockSpawner)]()
+        {
+            const auto Manager = FGlobalTabmanager::Get();
+            // A callback may have registered a replacement under the same ID.
+            if (Spawner && Manager->FindTabSpawnerFor(Id) == Spawner)
+                Manager->UnregisterNomadTabSpawner(Id);
+        };
+        if (DockInvocationDepth) PendingDockTeardown.Add(Retire);
+        else Retire();
+    }
+
+    void EndDockInvocation()
+    {
+        check(DockInvocationDepth > 0);
+        if (--DockInvocationDepth) return;
+        auto Teardown = MoveTemp(PendingDockTeardown);
+        for (auto& Retire : Teardown) Retire();
+    }
 
     void OwnDockTab(const TSharedRef<SDockTab>& Tab)
     {
@@ -242,7 +269,14 @@ struct FSession final : TSharedFromThis<FSession>
         if (OldWindow) OldWindow->SetContent(SNullWidget::NullWidget);
         if (OldTab) OldTab->SetContent(SNullWidget::NullWidget);
         if (OldNativeBrowser) OldNativeBrowser->CloseBrowser(true, false);
-        if (bDestroyWindow && OldTab && FSlateApplication::IsInitialized()) OldTab->RequestCloseTab();
+        if (bDestroyWindow && OldTab && FSlateApplication::IsInitialized())
+        {
+            // The spawner's tab is not adopted by Slate until TryInvokeTab
+            // returns. Retire session ownership now, close that tab afterwards.
+            const auto CloseTab = [OldTab]() { OldTab->RequestCloseTab(); };
+            if (DockInvocationDepth) PendingDockTeardown.Add(CloseTab);
+            else CloseTab();
+        }
         if (bDestroyWindow && OldWindow && FSlateApplication::IsInitialized())
             FSlateApplication::Get().RequestDestroyWindow(OldWindow.ToSharedRef());
         bDisposing = false;
@@ -321,9 +355,7 @@ struct FAuroraViewEditorModule::FImpl
         Sessions.Reset();
         for (const auto& Session : Snapshot)
         {
-            if (Session->bDockRegistered)
-                FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(Session->DockId);
-            Session->bDockRegistered = false;
+            Session->RetireDockSpawner();
             Session->Mailbox->Stop();
             Session->Dispose(true);
             Session->Handlers.Reset();
@@ -567,8 +599,7 @@ bool FAuroraViewEditorModule::RegisterDocked(FName Id, const FString& Fragment, 
     const FName DockId(*(TEXT("AuroraView.View.") + Id.ToString()));
     if (SessionOwner->bDockRegistered)
     {
-        FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(SessionOwner->DockId);
-        SessionOwner->bDockRegistered = false;
+        SessionOwner->RetireDockSpawner();
     }
     if (!SessionOwner->bDockRegistered)
     {
@@ -595,6 +626,7 @@ bool FAuroraViewEditorModule::RegisterDocked(FName Id, const FString& Fragment, 
             })).SetDisplayName(Title);
         SessionOwner->bDockRegistered = true;
         SessionOwner->DockId = DockId;
+        SessionOwner->DockSpawner = FGlobalTabmanager::Get()->FindTabSpawnerFor(DockId);
     }
     SessionOwner->DockFragment = Fragment;
     SessionOwner->DockTitle = Title;
@@ -629,7 +661,15 @@ bool FAuroraViewEditorModule::OpenDocked(FName Id, FString& OutError)
         return bOpened && Current() && Session->DockTab.Pin() == ErrorTab && Session->Browser.IsValid();
     }
     const FName DockId = Session->DockId;
-    const auto Tab = FGlobalTabmanager::Get()->TryInvokeTab(DockId);
+    TSharedPtr<SDockTab> Tab;
+    {
+        // UE 5.7 RestoreArea_Helper looks up the spawner again after OnSpawnTab
+        // returns. Keep its registration and unadopted tab alive for that entire
+        // engine invocation, including reentrant Close/Remove from the factory.
+        ++Session->DockInvocationDepth;
+        ON_SCOPE_EXIT { Session->EndDockInvocation(); };
+        Tab = FGlobalTabmanager::Get()->TryInvokeTab(DockId);
+    }
     if (!Current() || !Tab || Session->DockTab.Pin() != Tab)
     {
         // A spawner can finish registering its tab after its factory retired it.
@@ -731,9 +771,7 @@ bool FAuroraViewEditorModule::Remove(FName Id)
     // Remove map ownership before callback-capable destruction. A reentrant
     // registration gets an independent session that this removal never erases.
     Impl->Sessions.Remove(Id);
-    if (Session->bDockRegistered)
-        FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(Session->DockId);
-    Session->bDockRegistered = false;
+    Session->RetireDockSpawner();
     Session->Mailbox->Stop();
     Session->Dispose(true);
     return true;

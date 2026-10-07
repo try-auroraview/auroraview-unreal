@@ -66,10 +66,14 @@ bool FAuroraViewDockReentrancy::RunTest(const FString&)
         [this, &Module](const TSharedRef<SDockTab>&, const TSharedRef<SWidget>& Browser)
         {
             Module.Remove(ReplaceId); FString ReplacementError;
+            TestTrue(TEXT("Removed factory keeps its spawner until Slate finishes adoption"),
+                FGlobalTabmanager::Get()->HasTabSpawner(FName(TEXT("AuroraView.View.DockFactoryReplace"))));
             TestTrue(TEXT("Removed ID can open an independent replacement"), Module.Open(ReplaceId, Html, FText::FromName(ReplaceId), ReplacementError));
             return Browser;
         });
     TestFalse(TEXT("Removed/replaced session cannot satisfy outer open"), Module.OpenDocked(ReplaceId, Error));
+    TestFalse(TEXT("Removed spawner retires synchronously after Slate invocation"),
+        FGlobalTabmanager::Get()->HasTabSpawner(FName(TEXT("AuroraView.View.DockFactoryReplace"))));
     Module.RegisterDocked(ReopenId, Html, FText::FromName(ReopenId), Error,
         [this, &Module](const TSharedRef<SDockTab>&, const TSharedRef<SWidget>& Browser)
         {

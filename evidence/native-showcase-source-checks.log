@@ -1,0 +1,79 @@
+{
+  "status": "pass",
+  "checks": [
+    "pinned_event_bridge.js",
+    "pinned_bridge_stub.js",
+    "upstream_license_retained",
+    "editor_win64_boundary",
+    "build_dependencies_and_source_version_gate",
+    "native_lifecycle_and_navigation_source_guards",
+    "enqueue_only_native_endpoint",
+    "usable_id_invalid_type_error_source_guard",
+    "no_python_qt_foreground_hwnd_or_shell_backend"
+  ],
+  "unreal_compile": "not_run",
+  "unreal_ui": "not_run"
+}
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.003s
+
+OK
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.054s
+
+OK
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.002s
+
+OK
+PASS: 11 native mailbox lifecycle/concurrency cases
+✔ uses exact Core call envelope and native session token; JSON values round trip (6.676582ms)
+✔ upstream error name, code and data survive native response (1.786431ms)
+✔ rejected native queue settles the Core promise (1.115733ms)
+✔ failed native future settles the Core promise (0.916109ms)
+✔ synchronous transport failure is handled by unmodified Core (1.121852ms)
+✔ Core timeout clears pending state and ignores late response (1.791629ms)
+✔ close signal cancels pending calls; later calls fail fast (0.93679ms)
+✔ unload cancels pending calls (0.919023ms)
+✔ independent contexts do not share pending results (1.24254ms)
+✔ registered Core API methods use the same wire (0.913024ms)
+✔ stub call survives delayed Core installation (0.954936ms)
+✔ transport refuses subframes and missing native binding (1.052871ms)
+✔ Core events use trigger and unsubscribe correctly (0.789923ms)
+✔ 256 startup calls cannot consume the reserved ready handshake (7.485384ms)
+✔ failed ready acknowledgement cancels pending Core calls visibly (0.901708ms)
+✔ ready native future rejection is a fatal backend error (0.811265ms)
+✔ early invoke is rejected before Core can replay it as a host call (0.806207ms)
+✔ post-ready invoke keeps its distinct type for native rejection (1.048094ms)
+✔ early whenReady resolves to the installed Core bridge (0.937861ms)
+✔ close before Core ready rejects the adapted ready waiter (0.78123ms)
+✔ real startup order tolerates fragment calls before transport installation (0.834859ms)
+✔ synchronous MarkReady failure cancels startup replay calls (0.822321ms)
+✔ missing MarkReady prevents installation of the transport (0.660532ms)
+✔ multiple early ready waiters resolve once and survive subsequent unload (1.073501ms)
+✔ retained startup whenReady resolves immediately after Core is ready (0.683286ms)
+✔ actual inspector subscribes via existing Core API and renders safe text (4.801231ms)
+✔ host push does not silently overwrite an edit or its expected transform (2.129376ms)
+✔ new world scope invalidates the prior draft (2.832821ms)
+✔ closed bridge disables native mutations (1.69089ms)
+✔ rapid repeated apply cannot enqueue duplicate UI mutations (2.340377ms)
+ℹ tests 30
+ℹ suites 0
+ℹ pass 30
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 138.55642
+{
+  "status": "blocked",
+  "unreal_compile": "not_run",
+  "unreal_ui": "not_run",
+  "intended_source_target": "UE 5.7 Win64 Editor (experimental)",
+  "blockers": [
+    "No actual Unreal Engine root was supplied or verified"
+  ]
+}

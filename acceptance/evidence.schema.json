@@ -1,0 +1,367 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuroraView native evidence record v2",
+  "description": "Structural schema executed by native_evidence.py using the supported subset below. Canonical registry equality, actual measurements, trusted source/run/artifact identities, Automation results and UTC/media clock alignment are additional mandatory semantic checks in that same validator. This schema alone is not native acceptance.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "created_utc",
+    "source",
+    "engine",
+    "build",
+    "recording",
+    "cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_utc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "commit",
+        "tree",
+        "dirty",
+        "core_commit"
+      ],
+      "properties": {
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tree": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "core_commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "required": [
+        "version",
+        "build_id",
+        "platform"
+      ],
+      "properties": {
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "build_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platform": {
+          "type": "string"
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "required": [
+        "status",
+        "dll",
+        "log",
+        "receipt",
+        "automation_report"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "pending",
+            "pass",
+            "fail",
+            "blocked"
+          ]
+        },
+        "dll": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "file",
+            "sha256"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "log": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "file",
+            "sha256"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "receipt": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "file",
+            "sha256"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "automation_report": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "file",
+            "sha256"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "recording": {
+      "type": "object",
+      "required": [
+        "started_utc",
+        "host_seconds_at_video_zero"
+      ],
+      "properties": {
+        "started_utc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host_seconds_at_video_zero": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "stage",
+          "required",
+          "implementation",
+          "status",
+          "steps",
+          "expected_host_state",
+          "actual_host_state",
+          "assertions",
+          "media",
+          "automation",
+          "started_utc",
+          "finished_utc",
+          "host_time_s",
+          "notes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "integer"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "implementation": {
+            "enum": [
+              "source_candidate",
+              "unimplemented"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "blocked",
+              "pass",
+              "fail",
+              "unimplemented"
+            ]
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected_host_state": {
+            "type": "object"
+          },
+          "actual_host_state": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "assertions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "observation",
+                "actual",
+                "expected"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "observation": {
+                  "type": "string"
+                },
+                "operator": {
+                  "type": "string"
+                },
+                "tolerance": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "media": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "file",
+                "sha256",
+                "host_time_s"
+              ],
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "kind": {
+                  "enum": [
+                    "screenshot",
+                    "video"
+                  ]
+                },
+                "host_time_s": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "video_time_s": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "automation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_utc": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_utc": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host_time_s": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

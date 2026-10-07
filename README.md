@@ -1,150 +1,38 @@
-# AuroraView Unreal Editor source candidate
+# AuroraView Unreal
 
-**The native feature branches are integrated with reproducible Windows build
-and validation commands.** See [local builds and CI](docs/building.md).
+Experimental native AuroraView integration for Win64 **Unreal Editor and packaged games**. The source/build matrix matches dcc-mcp-unreal: **4.18, 4.26, 5.5, 5.7 and 5.8**. Each engine requires its own build and acceptance receipts; admission to the matrix alone does not certify compatibility.
 
-This cumulative stage adds actual Slate drag/drop surfaces and guarded native
-fixtures/evidence on top of stages 1 and 2. Actor drags admit the whole valid
-selection or reject it, with an explicit 128-actor capacity. Native destination
-acceptance and manual interaction evidence remain separate validation gates.
-See [this stage’s native scope and acceptance](docs/native-showcase.md).
+The Runtime module owns WebBrowser/CEF views, the unchanged AuroraView Core `call` / `invoke` / result / event bridge, GameThread dispatch and optional authenticated loopback communication. The Editor module adds native docking, inspector and drag/drop integrations. Existing per-view C++ APIs remain available through the Editor facade.
 
-The plugin remains experimental source for UE 5.7 Win64 Editor. No stable
-binary release is included. Native builds retain their exact source/engine
-identity, complete UAT log, compiler/SDK and verified package hashes. The
-isolated Editor runner checks all eight Automation results and process exit;
-compilation and graphical runtime acceptance have separate receipts.
+External Python scripts can register tools, receive browser calls, call native Unreal tools and exchange events in both Editor and games. No embedded Python dependency is needed. Where the engine provides and enables PythonScriptPlugin, Editor additionally offers `unreal.python.execute`. UE 4.18 and packaged games use external Python and native/project tools.
 
-Manual docking, native drag destinations and timestamped media remain separate
-cases in the [verification matrix](docs/acceptance.md). Historical baseline
-builds and early failures are recorded in [source provenance](docs/provenance.md)
-and [source review](docs/source-review.md); use current build receipts and
-Automation reports to identify the exact validated integration commit.
+```python
+from auroraview_unreal import Client
 
-## What is here
-
-- An Editor-only `.uplugin` and UnrealBuildTool module
-- Native `SWindow` / `SWebBrowser` integration using the engine's own CEF backend
-- Unmodified upstream AuroraView bridge assets pinned to
-  `11b3a29ad95a46cb22aaa604614de16da16bfc22`, with MIT notice and SHA-256 manifest
-- A small `window.ipc.postMessage` transport to `window.ue.auroraview.postmessage`
-- A separately acknowledged, reserved native ready signal immune to RPC queue saturation
-- One independently owned browser, reflected endpoint, queue and generation per view
-- GameThread-only host dispatch; show, hide, close, same-ID reopen and removal
-- Bounded queues, stale-generation rejection, duplicate-delivery suppression,
-  replaceable host handlers, nonblocking browser close and shutdown cleanup
-- A working cloud test entry point and an Unreal-only real browser smoke test
-
-Independent source review found and corrected startup backpressure and two
-upstream-stub compatibility defects. A small `ue_bootstrap.js` adapter rejects
-unsupported early `invoke` and resolves early `whenReady` using Core's existing
-event; the two pinned Core assets remain byte-for-byte unchanged. See the
-[source review record](docs/source-review.md).
-
-The renderer is UE WebBrowser/CEF. The Rust WebView backend, PyO3, Python, Qt,
-and arbitrary editor-command evaluation are not involved. The existing Core
-bridge remains the owner of JavaScript promises, IDs, timeouts, API binding and
-event delivery. The Unreal adapter decodes its existing wire envelope into
-explicitly registered C++ host handlers; it is not a second Core implementation.
-
-## Source target and ABI boundary
-
-The current **experimental source validation target is UE 5.7 / Win64 Editor**.
-`Build.cs` deliberately rejects other engine minors and platforms. The original
-reviewed source snapshot provisionally targeted 5.6; the current gate and
-preflight select 5.7 for experimental validation. The first native build exposed
-two C++ issues and a packaging omission; each was corrected in a separate commit.
-Pinned Core bridge JavaScript remains unchanged.
-This is not a source-compatibility or binary-support claim. See the
-[version validation plan](docs/version-validation.md) and
-[verified source provenance](docs/provenance.md).
-
-The verified native build used the actual UE 5.7.4 Win64 installation. Build each
-binary with that engine's UBT/UHT, its compiler/toolchain, and its CEF binaries.
-Do not reuse DLLs across UE minors, BuildIds, architectures or custom engine builds.
-
-There is no packaged-game, UE4, ARM64, Linux, macOS, Python ABI, live reload or
-arbitrary remote URL compatibility claim. Dynamic DLL reload is explicitly
-disabled; enabling/disabling the plugin requires an Editor restart. The module
-still removes its ticker, native bindings, browser ownership and pre-exit delegate
-on normal shutdown.
-
-## Run the checks available without Unreal
-
-```sh
-bash scripts/check.sh
+with Client(port=18770, token=token, expected_pid=pid,
+            expected_engine="5.7.", expected_context="game") as host:
+    host.bind_call("tools.multiply", lambda a, b: a * b)
+    print(host.call("unreal.engine.info"))
+    host.emit("tools:status", {"ready": True})
 ```
 
-Requires C++17 compiler, Node.js and Python 3; no third-party package installation.
-The C++ tests compile the exact transport mailbox used by the plugin. Node tests
-exercise the vendored **unmodified Core bridge** plus the actual UE transport JS
-in isolated VM contexts. These are contract tests, not a fake Unreal build.
+Install the stdlib-only client with `uv pip install ./python`, or use `PYTHONPATH=python`. See [Python and native tools](docs/python-tools.md) and [the script example](examples/python_tools.py).
 
-Windows source checks, verified UAT packaging and isolated Editor automation
-are available through [the build guide](docs/building.md). The GitHub native
-build uses the same package-verification entry point as local builds.
+Start an owned host with `-AuroraViewHostPort=<port> -AuroraViewHostToken=<32+ character token>`. Native reflection, console execution and shutdown additionally require `-AuroraViewAllowControl`. Keep tokens private; the listener binds only `127.0.0.1`. The plugin must be enabled in the target Editor project or compiled into the game.
 
-## Prepare a real engine build
+The shared control surface discovers loaded worlds, actors, objects, properties and reflected UFunctions. Project tools extend it with nonblocking operations and explicit application semantics. Editor APIs, latent UFunctions and arbitrary native functions do not become Runtime APIs automatically.
 
-1. Use the existing, authorized UE 5.7 Win64 installation selected for validation. Do not infer a path
-   from a stale engine registration. Read `Engine/Build/Build.version` first.
-2. Run `python scripts/preflight_engine.py --engine-root "<UE root>"` and save
-   its version/header inventory. This command does not install or compile anything.
-3. Compare the public API signatures with the exact installed headers. In
-   particular verify the `SWebBrowser` constructor, browser delegates,
-   `CloseBrowser`, UHT endpoint and `ReadOnlyTargetRules.Version` access.
-4. Build using that engine's `Engine/Build/BatchFiles/RunUAT.bat BuildPlugin
-   -Plugin="<source>/AuroraView.uplugin" -Package="<separate output>"
-   -TargetPlatforms=Win64`. A clean UHT/UBT pass is a required next gate.
-5. In a disposable Editor project, place this source under `Plugins/AuroraView`,
-   enable it and restart. Run `AuroraView.Demo` in the Editor console.
-6. Run the `AuroraView.Editor.BridgeRoundTrip` Automation test in a real
-   graphical Editor, without `-NullRHI`. Then complete [the acceptance matrix](docs/acceptance.md).
+## Build and validate
 
-This document does not authorize installing Unreal, accepting Epic terms,
-changing a user's project, using the user's computer, or publishing anything.
+[Local builds and CI](docs/building.md) use the same scripts. A complete validation has independent gates:
 
-## Native API
+1. Portable C++, JavaScript and Python contracts: `pwsh -File scripts/check.ps1` or `bash scripts/check.sh`.
+2. Actual UHT/UBT Editor and Development/Shipping Game compilation plus package integrity: `scripts/build_plugin.py`.
+3. Nine real graphical Editor Automation tests: `scripts/validate_editor.ps1`.
+4. Actual BuildCookRun, staged Game identity, native reflection, external Python tools, events and normal process exit: `scripts/validate_game.ps1`.
 
-Include `AuroraViewEditorModule.h` from another Editor module, depend on
-`AuroraViewEditor`, and obtain the module through `FModuleManager`.
-Call all host-control methods on GameThread:
+The Game validator uses NullRHI; rendered Game CEF acceptance is a separate gate. Manual docking/drag destination behavior also remains separate. See [version policy](docs/version-validation.md), [architecture](docs/architecture.md), [acceptance history](docs/acceptance.md) and [native showcase](docs/native-showcase.md).
 
-```cpp
-const FName Id(TEXT("MyTool"));
-Module.BindCall(Id, TEXT("api.echo"), [](const TSharedPtr<FJsonValue>& Params) {
-    return FAuroraViewReply::Success(Params);
-});
-FString Error;
-Module.Open(Id, TrustedHtmlFragment, FText::FromString(TEXT("My tool")), Error);
-Module.Hide(Id);   // Browser/session remains alive; RPC remains available.
-Module.Show(Id);
-Module.Close(Id);  // Cancels queued native work and discards this browser.
-Module.Open(Id, TrustedHtmlFragment, FText::FromString(TEXT("My tool")), Error);
-Module.Remove(Id); // Also forgets registrations and permanently stops this session.
-```
+The original AuroraView Core assets stay byte-for-byte pinned to `11b3a29ad95a46cb22aaa604614de16da16bfc22`, with MIT notice and SHA-256 manifest. UE4's Chromium 59 uses reproducibly generated legacy bundles; UE5 uses the original assets. The engine supplies its own CEF binaries. DLLs cannot be shared across engine minors, BuildIds or architectures. Dynamic module reload remains disabled.
 
-The trusted HTML fragment may use inline CSS/JS and data images; network requests,
-frames, popups and subsequent navigation are blocked. Wait for `auroraviewready`
-or queue calls with the upstream stub. Use `auroraview.call('api.echo', params)`;
-register an `api` shorthand explicitly with Core's `_registerApiMethods` if needed.
-The minimum host contract accepts `call`; unsupported `invoke` receives a
-structured error. General frontend event callbacks are not implemented.
-
-Handlers must be short, synchronous and nonblocking. Return a JSON value or a
-`FAuroraViewReply::Failure`; UE generally disables C++ exceptions. Capture weak
-UObjects and validate them before use. No Rust or Python async callback ABI is
-introduced. A JavaScript timeout does not retract an already accepted native
-call; close/removal/shutdown cancel queued calls. Long-running cancellable jobs
-need a future shared Core cancellation/completion contract.
-
-## Evidence and remaining work
-
-- [Architecture and source references](docs/architecture.md)
-- [Acceptance matrix and verification limits](docs/acceptance.md)
-- [Cloud check output](evidence/cloud-checks.log)
-- [Pinned upstream asset manifest](ThirdParty/AuroraViewCore/manifest.json)
-
-No UE headers, engine binaries, CEF redistributables, generated UHT files or
-third-party plugin code are included. MIT Core notices are retained. Other
-software remains under its respective license.
+[Upstream integration and splitting](docs/upstream-integration.md) records the existing AuroraView contract/adapter extraction and the remaining concrete factory and UE integration work. This repository keeps Unreal lifecycle, native widgets, thread affinity and packaging in the Unreal adapter.

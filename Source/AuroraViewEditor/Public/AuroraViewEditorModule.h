@@ -8,26 +8,7 @@ class SDockTab;
 class SWidget;
 class FJsonObject;
 
-// Called on GameThread after the browser is constructed. Native widgets may
-// surround it; the browser and RPC session are still owned by this module.
-using FAuroraViewDockContent = TFunction<TSharedRef<SWidget>(
-    const TSharedRef<SDockTab>&, const TSharedRef<SWidget>&)>;
-
-struct AURORAVIEWEDITOR_API FAuroraViewReply
-{
-    bool bOk = true;
-    TSharedPtr<FJsonValue> Result;
-    FString ErrorName;
-    FString ErrorMessage;
-    FString ErrorCode;
-
-    static FAuroraViewReply Success(TSharedPtr<FJsonValue> Value);
-    static FAuroraViewReply Failure(FString Name, FString Message, FString Code = TEXT("HOST_ERROR"));
-};
-
-// Synchronous, bounded handlers run exclusively on GameThread. Return errors;
-// do not throw C++ exceptions, block, or capture raw UObject pointers.
-using FAuroraViewHandler = TFunction<FAuroraViewReply(const TSharedPtr<FJsonValue>&)>;
+#include "AuroraViewRuntimeModule.h"
 
 class AURORAVIEWEDITOR_API FAuroraViewEditorModule final : public IModuleInterface
 {
@@ -63,8 +44,6 @@ public:
     bool UnbindCall(FName Id, const FString& Method);
     void OpenDemo();
 private:
-    bool OpenPresentation(FName Id, const FString& TrustedHtmlFragment, const FText& Title,
-        FString& OutError, const TSharedPtr<SDockTab>& DockTab);
     struct FImpl;
     TUniquePtr<FImpl> Impl;
 };

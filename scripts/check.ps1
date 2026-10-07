@@ -44,18 +44,21 @@ try {
         'scripts/verify_source.py',
         'tests/preflight_test.py',
         'tests/build_plugin_test.py',
+        'tests/validate_game_test.py',
+        'tests/python_client_test.py',
         'tests/native_evidence_test.py',
         'tests/native_showcase_source_test.py'
     )) {
         Invoke-Checked $pythonExe @((Join-Path $root $test))
     }
 
-    $include = Join-Path $root 'Source/AuroraViewEditor/Private'
+    $include = Join-Path $root 'Source/AuroraViewRuntime/Private'
+    $editorInclude = Join-Path $root 'Source/AuroraViewEditor/Private'
     foreach ($test in @('mailbox_test', 'native_interaction_guards_test')) {
         $executable = Join-Path $build ($test + '.exe')
         Invoke-Checked $compilerExe @(
             '-std=c++17', '-Wall', '-Wextra', '-Werror', '-pedantic',
-            ('-I' + $include), (Join-Path $root "tests/$test.cpp"), '-o', $executable
+            ('-I' + $include), ('-I' + $editorInclude), (Join-Path $root "tests/$test.cpp"), '-o', $executable
         )
         Invoke-Checked $executable @()
     }

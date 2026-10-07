@@ -15,12 +15,17 @@ concurrency:
 
 jobs:
   build-plugin:
-    name: UE 5.7 Win64 native build
+    name: UE ${{ matrix.engine }} Win64 Editor and Runtime build
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64, auroraview-unreal]
-    timeout-minutes: 45
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        engine: ['4.18', '4.26', '5.5', '5.7', '5.8']
     env:
-      UE_ROOT: F:\UE\UE_5.7
+      UE_ROOT: F:\UE\UE_${{ matrix.engine }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -31,20 +36,33 @@ jobs:
       - name: Select an isolated build output
         shell: pwsh
         run: |
-          $buildOutput = Join-Path $env:RUNNER_TEMP 'AuroraView-${{ github.run_id }}-${{ github.run_attempt }}'
+          $buildOutput = Join-Path $env:RUNNER_TEMP 'AuroraView-UE${{ matrix.engine }}-${{ github.run_id }}-${{ github.run_attempt }}'
           "BUILD_OUTPUT=$buildOutput" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Build and verify the complete plugin package
         shell: pwsh
         run: |
-          python scripts/build_plugin.py --engine-root "$env:UE_ROOT" --output "$env:BUILD_OUTPUT"
+          python scripts/build_plugin.py --engine-root "$env:UE_ROOT" --engine-version '${{ matrix.engine }}' --require-clean --output "$env:BUILD_OUTPUT"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain package, build receipt and complete UAT log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AuroraView-UE5.7-Win64-${{ github.sha }}
+          name: AuroraView-UE${{ matrix.engine }}-Win64-${{ github.sha }}
           path: ${{ env.BUILD_OUTPUT }}
           if-no-files-found: error
+          retention-days: 14
+      - name: Cook, package and accept the live Game Runtime
+        shell: pwsh
+        run: |
+          python scripts/validate_game.py --engine-root "$env:UE_ROOT" --package "$env:BUILD_OUTPUT/Package" --output "$env:BUILD_OUTPUT-Game" --timeout 2400
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain packaged Game acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuroraView-Game-UE${{ matrix.engine }}-Win64-${{ github.sha }}
+          path: ${{ env.BUILD_OUTPUT }}-Game
+          if-no-files-found: warn
           retention-days: 14
 
   fork-boundary:

@@ -1,0 +1,610 @@
+(() => {
+  (function() {
+    "use strict";
+    (function() {
+      const DEBUG = !!window.__AURORAVIEW_DEBUG__;
+      function debugLog(...args) {
+        if (DEBUG) {
+          console.log("[AuroraView]", ...args);
+        }
+      }
+      debugLog("Initializing event bridge...");
+      if (window.auroraview && window.auroraview._ready) {
+        debugLog("Event bridge already initialized, skipping");
+        return;
+      }
+      const pendingFromStub = window.auroraview && window.auroraview._pendingCalls ? window.auroraview._pendingCalls.slice() : [];
+      let readyCallbacks = [];
+      const eventHandlers = /* @__PURE__ */ new Map();
+      let auroraviewCallIdCounter = 0;
+      const auroraviewPendingCalls = /* @__PURE__ */ new Map();
+      const DEFAULT_CALL_TIMEOUT_MS = 3e4;
+      const config = {
+        callTimeoutMs: DEFAULT_CALL_TIMEOUT_MS,
+        backendFailFast: true,
+        heartbeatTimeoutMs: 0
+      };
+      function applyConfig(partial) {
+        if (!partial) return;
+        if (typeof partial.callTimeoutMs === "number") {
+          config.callTimeoutMs = partial.callTimeoutMs;
+        }
+        if (typeof partial.backendFailFast === "boolean") {
+          config.backendFailFast = partial.backendFailFast;
+        }
+        if (typeof partial.heartbeatTimeoutMs === "number") {
+          config.heartbeatTimeoutMs = partial.heartbeatTimeoutMs;
+        }
+      }
+      applyConfig(window.__AURORAVIEW_CONFIG__);
+      let lastHealthTs = Date.now();
+      let hasHealthSignal = false;
+      let heartbeatTimer = null;
+      function ensureHeartbeatMonitor() {
+        if (config.heartbeatTimeoutMs <= 0) {
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = null;
+          }
+          return;
+        }
+        if (heartbeatTimer) return;
+        heartbeatTimer = setInterval(() => {
+          if (!backendHealthy || !hasHealthSignal) return;
+          const now = Date.now();
+          if (now - lastHealthTs > config.heartbeatTimeoutMs) {
+            markBackendUnhealthy("heartbeat timeout");
+          }
+        }, Math.max(500, Math.floor(config.heartbeatTimeoutMs / 2)));
+      }
+      ensureHeartbeatMonitor();
+      let backendHealthy = true;
+      const FATAL_ERROR_KEYWORDS = [
+        "process has exited",
+        "backend ready timeout",
+        "stdout closed",
+        "connection lost",
+        "fatal error",
+        "crash"
+      ];
+      function isFatalError(message) {
+        const lowerMessage = message.toLowerCase();
+        return FATAL_ERROR_KEYWORDS.some((keyword) => lowerMessage.includes(keyword));
+      }
+      function describeBackendError(detail) {
+        if (typeof detail === "string") return detail;
+        if (detail && typeof detail === "object") {
+          const maybeMessage = detail.message;
+          if (typeof maybeMessage === "string") return maybeMessage;
+          try {
+            return JSON.stringify(detail);
+          } catch (e) {
+            return "[unserializable backend error]";
+          }
+        }
+        return "unknown backend error";
+      }
+      function markBackendUnhealthy(detail) {
+        const reason = describeBackendError(detail);
+        if (isFatalError(reason)) {
+          if (backendHealthy) {
+            backendHealthy = false;
+            console.error("[AuroraView] Fatal backend error:", reason, detail != null ? detail : "");
+            clearAllPendingCalls("backend unavailable: ".concat(reason));
+          }
+        } else {
+          console.error("[AuroraView] Backend error received:", detail != null ? detail : "");
+        }
+      }
+      function markBackendHealthy() {
+        lastHealthTs = Date.now();
+        if (backendHealthy) return;
+        backendHealthy = true;
+        debugLog("Backend marked healthy");
+      }
+      function auroraviewGenerateCallId() {
+        auroraviewCallIdCounter += 1;
+        return "av_call_" + Date.now() + "_" + auroraviewCallIdCounter;
+      }
+      function registerPendingCall(id, resolve, reject, timeoutMs) {
+        const timeout = timeoutMs != null ? timeoutMs : config.callTimeoutMs;
+        const timeoutId = setTimeout(() => {
+          const pending = auroraviewPendingCalls.get(id);
+          if (pending) {
+            auroraviewPendingCalls.delete(id);
+            const error = new Error("AuroraView call timed out after ".concat(timeout, "ms"));
+            error.name = "TimeoutError";
+            error.code = "TIMEOUT";
+            pending.reject(error);
+            console.warn("[AuroraView] Call timed out:", id);
+          }
+        }, timeout);
+        auroraviewPendingCalls.set(id, { resolve, reject, timeoutId });
+      }
+      function clearAllPendingCalls(reason) {
+        const count = auroraviewPendingCalls.size;
+        if (count > 0) {
+          debugLog("Clearing", count, "pending calls:", reason);
+          auroraviewPendingCalls.forEach((pending, id) => {
+            if (pending.timeoutId) {
+              clearTimeout(pending.timeoutId);
+            }
+            const error = new Error("AuroraView call cancelled: ".concat(reason));
+            error.name = "CancelledError";
+            error.code = "CANCELLED";
+            pending.reject(error);
+          });
+          auroraviewPendingCalls.clear();
+        }
+      }
+      window.addEventListener("beforeunload", () => {
+        clearAllPendingCalls("page unloading");
+      });
+      function handleCallResult(detail) {
+        try {
+          const id = detail && detail.id;
+          if (!id) {
+            console.warn("[AuroraView] call_result without id:", detail);
+            return;
+          }
+          const pending = auroraviewPendingCalls.get(id);
+          if (!pending) {
+            console.warn("[AuroraView] No pending call for id:", id);
+            return;
+          }
+          if (pending.timeoutId) {
+            clearTimeout(pending.timeoutId);
+          }
+          auroraviewPendingCalls.delete(id);
+          if (detail.ok) {
+            pending.resolve(detail.result);
+          } else {
+            const errInfo = detail.error || {};
+            const error = new Error(errInfo.message || "AuroraView call failed");
+            if (errInfo.name) error.name = errInfo.name;
+            if (errInfo.code !== void 0) error.code = errInfo.code;
+            if (errInfo.data !== void 0) error.data = errInfo.data;
+            pending.reject(error);
+          }
+        } catch (e) {
+          console.error("[AuroraView] Error handling call_result:", e);
+        }
+      }
+      window.auroraview = {
+        /**
+         * High-level call API (JS -> Python, Promise-based)
+         * @param method - The method to call
+         * @param params - Optional parameters
+         * @param options - Optional call options (e.g., timeout)
+         */
+        call: function(method, params, options) {
+          debugLog("Calling Python method via auroraview.call:", method, DEBUG ? params : "(params hidden)");
+          if (config.backendFailFast && !backendHealthy) {
+            const error = new Error("AuroraView backend unavailable");
+            error.name = "BackendUnavailableError";
+            error.code = "BACKEND_UNAVAILABLE";
+            return Promise.reject(error);
+          }
+          return new Promise(function(resolve, reject) {
+            const id = auroraviewGenerateCallId();
+            registerPendingCall(
+              id,
+              resolve,
+              reject,
+              options == null ? void 0 : options.timeout
+            );
+            try {
+              const payload = {
+                type: "call",
+                id,
+                method
+              };
+              if (typeof params !== "undefined") {
+                payload.params = params;
+              }
+              window.ipc.postMessage(JSON.stringify(payload));
+            } catch (e) {
+              const pending = auroraviewPendingCalls.get(id);
+              if (pending == null ? void 0 : pending.timeoutId) {
+                clearTimeout(pending.timeoutId);
+              }
+              auroraviewPendingCalls.delete(id);
+              console.error("[AuroraView] Failed to send call via IPC:", e);
+              reject(e);
+            }
+          });
+        },
+        /**
+         * Send event to Python (JS -> Python, fire-and-forget)
+         */
+        send_event: function(event, detail) {
+          try {
+            const payload = {
+              type: "event",
+              event,
+              detail: detail || {}
+            };
+            window.ipc.postMessage(JSON.stringify(payload));
+            debugLog("Event sent:", event, DEBUG ? detail : "(detail hidden)");
+          } catch (e) {
+            console.error("[AuroraView] Failed to send event:", e);
+          }
+        },
+        /**
+         * Register event handler (Python -> JS)
+         * @returns Unsubscribe function
+         */
+        on: function(event, handler) {
+          if (typeof handler !== "function") {
+            console.error("[AuroraView] Handler must be a function");
+            return () => {
+            };
+          }
+          if (!eventHandlers.has(event)) {
+            eventHandlers.set(event, /* @__PURE__ */ new Set());
+          }
+          const handlers = eventHandlers.get(event);
+          handlers.add(handler);
+          debugLog("Registered handler for event:", event);
+          return () => {
+            handlers.delete(handler);
+            if (handlers.size === 0) {
+              eventHandlers.delete(event);
+            }
+            debugLog("Unregistered handler for event:", event);
+          };
+        },
+        /**
+         * Remove event handler
+         */
+        off: function(event, handler) {
+          var _a;
+          if (handler) {
+            (_a = eventHandlers.get(event)) == null ? void 0 : _a.delete(handler);
+          } else {
+            eventHandlers.delete(event);
+          }
+        },
+        /**
+         * Trigger event handlers (called by Python)
+         */
+        trigger: function(event, detail) {
+          if (event === "__auroraview_call_result") {
+            handleCallResult(detail);
+            return;
+          }
+          if (event === "__invoke_result__") {
+            handleCallResult(detail);
+            return;
+          }
+          if (event === "backend_error") {
+            markBackendUnhealthy(detail);
+            const handlers2 = eventHandlers.get(event);
+            if (!handlers2 || handlers2.size === 0) {
+              return;
+            }
+          } else if (event === "backend_ready" || event === "backend_health") {
+            if (event === "backend_health") {
+              hasHealthSignal = true;
+            }
+            markBackendHealthy();
+            const handlers2 = eventHandlers.get(event);
+            if (!handlers2 || handlers2.size === 0) {
+              return;
+            }
+          }
+          const handlers = eventHandlers.get(event);
+          if (!handlers || handlers.size === 0) {
+            if (DEBUG) {
+              console.debug("[AuroraView] No handlers for event:", event);
+            }
+            return;
+          }
+          handlers.forEach(function(handler) {
+            try {
+              handler(detail);
+            } catch (e) {
+              console.error("[AuroraView] Error in event handler:", e);
+            }
+          });
+        },
+        /**
+         * Namespace for API methods (populated by Python)
+         */
+        api: {},
+        /**
+         * Invoke a plugin command (JS -> Python, Promise-based)
+         * @param cmd - The plugin command to invoke
+         * @param args - Optional arguments
+         * @param options - Optional call options (e.g., timeout)
+         */
+        invoke: function(cmd, args, options) {
+          debugLog("Invoking plugin command:", cmd, DEBUG ? args : "(args hidden)");
+          return new Promise(function(resolve, reject) {
+            const id = auroraviewGenerateCallId();
+            registerPendingCall(
+              id,
+              resolve,
+              reject,
+              options == null ? void 0 : options.timeout
+            );
+            try {
+              const payload = {
+                type: "invoke",
+                id,
+                cmd,
+                args: args || {}
+              };
+              window.ipc.postMessage(JSON.stringify(payload));
+            } catch (e) {
+              const pending = auroraviewPendingCalls.get(id);
+              if (pending == null ? void 0 : pending.timeoutId) {
+                clearTimeout(pending.timeoutId);
+              }
+              auroraviewPendingCalls.delete(id);
+              console.error("[AuroraView] Failed to send invoke via IPC:", e);
+              reject(e);
+            }
+          });
+        },
+        /**
+         * Ready state flag
+         */
+        _ready: false,
+        setConfig: function(partial) {
+          applyConfig(partial);
+          ensureHeartbeatMonitor();
+        },
+        /**
+         * Pending calls queue
+         */
+        _pendingCalls: [],
+        /**
+         * Wait for event bridge to be ready
+         */
+        whenReady: function() {
+          return new Promise(function(resolve) {
+            if (window.auroraview._ready) {
+              resolve(window.auroraview);
+            } else {
+              readyCallbacks.push(resolve);
+            }
+          });
+        },
+        /**
+         * Check if bridge is ready (synchronous)
+         */
+        isReady: function() {
+          return window.auroraview._ready === true;
+        },
+        /**
+         * Registry of all bound methods
+         */
+        _boundMethods: {},
+        /**
+         * Check if a method is already registered
+         */
+        isMethodBound: function(fullMethodName) {
+          return !!window.auroraview._boundMethods[fullMethodName];
+        },
+        /**
+         * Get list of all bound method names
+         */
+        getBoundMethods: function() {
+          return Object.keys(window.auroraview._boundMethods);
+        },
+        /**
+         * Start native window drag (for frameless windows)
+         * Call this on mousedown event in drag regions
+         */
+        startDrag: function() {
+          try {
+            const payload = {
+              type: "__internal",
+              action: "drag_window"
+            };
+            window.ipc.postMessage(JSON.stringify(payload));
+          } catch (e) {
+            console.warn("[AuroraView] Failed to start native drag:", e);
+          }
+        },
+        /**
+         * Enable automatic drag regions based on `-webkit-app-region` CSS.
+         *
+         * WebView2 doesn't implement Electron/Tauri's app-region behavior, so we emulate it:
+         * - If pointer goes down inside an element (or its ancestors) marked as `drag`, we arm dragging.
+         * - If the pointer moves more than a small threshold, we call `startDrag()`.
+         * - If any ancestor is marked as `no-drag`, dragging is suppressed.
+         */
+        _installAutoDragRegions: function() {
+          try {
+            let getAppRegion = function(el) {
+              try {
+                const v = getComputedStyle(el).getPropertyValue("-webkit-app-region");
+                return (v || "").trim();
+              } catch (e) {
+                return "";
+              }
+            }, isNoDrag = function(el) {
+              var _a;
+              return ((_a = el.classList) == null ? void 0 : _a.contains("no-drag")) || getAppRegion(el) === "no-drag";
+            }, isDrag = function(el) {
+              var _a;
+              return ((_a = el.classList) == null ? void 0 : _a.contains("drag-handle")) || getAppRegion(el) === "drag";
+            }, findDragRegion = function(startEl) {
+              let el = startEl;
+              let dragEl = null;
+              while (el && el !== document.documentElement) {
+                if (isNoDrag(el)) return null;
+                if (!dragEl && isDrag(el)) dragEl = el;
+                el = el.parentElement;
+              }
+              return dragEl;
+            }, clearPending = function() {
+              pending = null;
+            };
+            const w = window;
+            if (w.__auroraview_auto_drag_regions_installed) return;
+            w.__auroraview_auto_drag_regions_installed = true;
+            const DRAG_THRESHOLD_PX = 4;
+            let pending = null;
+            let suppressClickUntil = 0;
+            document.addEventListener(
+              "mousedown",
+              (e) => {
+                try {
+                  if (e.button !== 0) return;
+                  const t = e.target;
+                  if (!t || !(t instanceof Element)) return;
+                  const dragEl = findDragRegion(t);
+                  if (!dragEl) return;
+                  pending = { x: e.clientX, y: e.clientY };
+                } catch (err) {
+                  console.warn("[AuroraView] Auto drag region handler error:", err);
+                }
+              },
+              true
+            );
+            document.addEventListener(
+              "mousemove",
+              (e) => {
+                try {
+                  if (!pending) return;
+                  const dx = e.clientX - pending.x;
+                  const dy = e.clientY - pending.y;
+                  if (dx * dx + dy * dy < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) return;
+                  clearPending();
+                  suppressClickUntil = Date.now() + 800;
+                  window.auroraview.startDrag();
+                  e.preventDefault();
+                } catch (err) {
+                  console.warn("[AuroraView] Auto drag region handler error:", err);
+                }
+              },
+              true
+            );
+            document.addEventListener("mouseup", clearPending, true);
+            window.addEventListener("blur", clearPending, true);
+            document.addEventListener(
+              "click",
+              (e) => {
+                try {
+                  if (Date.now() < suppressClickUntil) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }
+                } catch (e2) {
+                }
+              },
+              true
+            );
+          } catch (e) {
+            console.warn("[AuroraView] Failed to install auto drag regions:", e);
+          }
+        },
+        /**
+         * Register API methods dynamically
+         */
+        _registerApiMethods: function(namespace, methods, options) {
+          if (!namespace || !methods || !Array.isArray(methods)) {
+            console.error("[AuroraView] Invalid arguments for _registerApiMethods");
+            return;
+          }
+          const opts = options || {};
+          const allowRebind = opts.allowRebind !== false;
+          if (!window.auroraview[namespace]) {
+            window.auroraview[namespace] = {};
+          }
+          let registeredCount = 0;
+          let skippedCount = 0;
+          for (let i = 0; i < methods.length; i++) {
+            const methodName = methods[i];
+            const fullMethodName = namespace + "." + methodName;
+            if (window.auroraview._boundMethods[fullMethodName]) {
+              if (!allowRebind) {
+                console.debug("[AuroraView] Skipping already bound method:", fullMethodName);
+                skippedCount++;
+                continue;
+              }
+              console.debug("[AuroraView] Rebinding method:", fullMethodName);
+            }
+            window.auroraview[namespace][methodName] = /* @__PURE__ */ (function(fullName) {
+              return function(params) {
+                return window.auroraview.call(fullName, params);
+              };
+            })(fullMethodName);
+            window.auroraview._boundMethods[fullMethodName] = true;
+            registeredCount++;
+          }
+          if (registeredCount > 0) {
+            debugLog("Registered", registeredCount, "methods in window.auroraview." + namespace);
+          }
+          if (skippedCount > 0) {
+            debugLog("Skipped", skippedCount, "already-bound methods in window.auroraview." + namespace);
+          }
+        }
+      };
+      window.auroraview._ready = true;
+      window.auroraview._installAutoDragRegions();
+      if (pendingFromStub.length > 0) {
+        debugLog("Processing", pendingFromStub.length, "pending calls from stub");
+        pendingFromStub.forEach(function(pending) {
+          try {
+            if (pending.type === "event" && pending.event) {
+              window.auroraview.send_event(pending.event, pending.detail);
+            } else if (pending.type === "handler" && pending.event && pending.handler) {
+              window.auroraview.on(pending.event, pending.handler);
+            } else if (pending.type === "register" && pending.namespace && pending.methods) {
+              window.auroraview._registerApiMethods(pending.namespace, pending.methods);
+            } else if (pending.method && pending.resolve && pending.reject) {
+              window.auroraview.call(pending.method, pending.params).then(pending.resolve).catch(pending.reject);
+            }
+          } catch (e) {
+            if (pending.reject) {
+              pending.reject(e);
+            }
+          }
+        });
+      }
+      if (readyCallbacks.length > 0) {
+        debugLog("Notifying", readyCallbacks.length, "ready callbacks");
+        readyCallbacks.forEach(function(callback) {
+          try {
+            callback(window.auroraview);
+          } catch (e) {
+            console.error("[AuroraView] Error in ready callback:", e);
+          }
+        });
+        readyCallbacks = [];
+      }
+      debugLog("✓ Event bridge initialized");
+      debugLog("✓ API: window.auroraview.call() / .send_event() / .on() / .whenReady()");
+      try {
+        window.auroraview.send_event("__auroraview_ready", {
+          timestamp: Date.now(),
+          url: window.location.href
+        });
+        debugLog("✓ Sent __auroraview_ready event to backend");
+      } catch (e) {
+        console.warn("[AuroraView] Failed to send __auroraview_ready event:", e);
+      }
+      function dispatchReadyEvent() {
+        try {
+          window.dispatchEvent(
+            new CustomEvent("auroraviewready", {
+              detail: { timestamp: Date.now(), url: window.location.href }
+            })
+          );
+          debugLog("✓ Dispatched auroraviewready DOM event");
+        } catch (e) {
+          console.warn("[AuroraView] Failed to dispatch auroraviewready event:", e);
+        }
+      }
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", dispatchReadyEvent);
+      } else {
+        setTimeout(dispatchReadyEvent, 0);
+      }
+    })();
+  })();
+})();

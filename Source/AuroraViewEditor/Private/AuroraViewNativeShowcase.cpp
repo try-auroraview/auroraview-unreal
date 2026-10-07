@@ -15,6 +15,9 @@
 #include "SceneOutlinerModule.h"
 #include "ISceneOutliner.h"
 #include "SceneOutlinerPublicTypes.h"
+#if ENGINE_MAJOR_VERSION == 4
+#include "SceneOutlinerFilters.h"
+#endif
 #include "ScopedTransaction.h"
 #include "Components/SceneComponent.h"
 #include "Widgets/Text/STextBlock.h"
@@ -58,7 +61,7 @@ TSharedRef<FJsonObject> TransformJson(const FTransform& T)
 bool ReadVector(const TSharedPtr<FJsonObject>& O, const TCHAR* Key, FVector& Out, double Min, double Max)
 {
     const TArray<TSharedPtr<FJsonValue>>* A = nullptr;
-    if (!O || !O->TryGetArrayField(Key, A) || A->Num() != 3) return false;
+    if (!O.IsValid() || !O->TryGetArrayField(Key, A) || A->Num() != 3) return false;
     double V[3];
     for (int32 I = 0; I < 3; ++I)
         if (!(*A)[I].IsValid() || (*A)[I]->Type != EJson::Number || !(*A)[I]->TryGetNumber(V[I])
@@ -78,7 +81,12 @@ bool ReadTransform(const TSharedPtr<FJsonObject>& O, FTransform& Out)
 bool CanEdit(AActor* Actor)
 {
     return IsValid(Actor) && !Actor->IsTemplate() && !Actor->IsActorBeingDestroyed()
-        && Actor->GetWorld() == EditorWorld() && Actor->GetRootComponent() && !Actor->IsLockLocation()
+        && Actor->GetWorld() == EditorWorld() && Actor->GetRootComponent()
+#if ENGINE_MAJOR_VERSION >= 5
+        && !Actor->IsLockLocation()
+#else
+        && !Actor->bLockLocation
+#endif
         && !FLevelUtils::IsLevelLocked(Actor->GetLevel());
 }
 }
@@ -104,18 +112,18 @@ bool FAuroraViewNativeShowcase::Start(const FString& Html, FString& OutError)
         Module.BindCall(Id, Method, [Weak, Method](const TSharedPtr<FJsonValue>& Params)
         {
             const auto Self = Weak.Pin();
-            return Self ? Self->Dispatch(Method, Params) : Failure(TEXT("CLOSED"), TEXT("Showcase host closed"));
+            return Self.IsValid() ? Self->Dispatch(Method, Params) : Failure(TEXT("CLOSED"), TEXT("Showcase host closed"));
         });
     }
     if (!Module.RegisterDocked(Id, Html, FText::FromString(TEXT("AuroraView Native Showcase")), OutError,
         [Weak](const TSharedRef<SDockTab>& Tab, const TSharedRef<SWidget>& Browser) -> TSharedRef<SWidget>
         {
             const auto Self = Weak.Pin();
-            return Self ? Self->MakeWorkspace(Tab, Browser) : Browser;
+            return Self.IsValid() ? Self->MakeWorkspace(Tab, Browser) : Browser;
         })) return false;
     AssetSelectionHandle = FModuleManager::LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"))
         .GetOnAssetSelectionChanged().AddSP(this, &FAuroraViewNativeShowcase::ContentSelectionChanged);
-    TickHandle = FTSTicker::GetCoreTicker().AddTicker(
+    TickHandle = AuroraViewCompatibility::FTicker::GetCoreTicker().AddTicker(
         FTickerDelegate::CreateSP(this, &FAuroraViewNativeShowcase::Tick), 0.2f);
     return true;
 }
@@ -124,7 +132,7 @@ void FAuroraViewNativeShowcase::Stop()
     check(IsInGameThread());
     if (bStopped) return;
     bStopped = true;
-    FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+    AuroraViewCompatibility::FTicker::GetCoreTicker().RemoveTicker(TickHandle);
     if (auto* ContentBrowser = FModuleManager::GetModulePtr<FContentBrowserModule>(TEXT("ContentBrowser")))
         ContentBrowser->GetOnAssetSelectionChanged().Remove(AssetSelectionHandle);
     if (bStarted) for (const TCHAR* Name : Methods) Module.UnbindCall(Id, Name);
@@ -139,7 +147,10 @@ void FAuroraViewNativeShowcase::ClearOutliners()
     const auto Containers = OutlinerHosts;
     OutlinerWorld.Reset();
     for (const auto& WeakContainer : Containers)
-        if (const auto Container = WeakContainer.Pin()) Container->SetContent(SNullWidget::NullWidget);
+    {
+        const auto Container = WeakContainer.Pin();
+        if (Container.IsValid()) Container->SetContent(SNullWidget::NullWidget);
+    }
 }
 void FAuroraViewNativeShowcase::RefreshScope()
 {
@@ -192,7 +203,10 @@ TArray<TWeakObjectPtr<AActor>> FAuroraViewNativeShowcase::GetSelectedActors() co
     TArray<TWeakObjectPtr<AActor>> Result;
     if (!GEditor || !EditorWorld()) return Result;
     for (FSelectionIterator It(*GEditor->GetSelectedActors()); It && Result.Num() < 128; ++It)
-        if (AActor* Actor = Cast<AActor>(*It); IsValid(Actor) && Actor->GetWorld() == EditorWorld()) Result.Add(Actor);
+    {
+        AActor* Actor = Cast<AActor>(*It);
+        if (IsValid(Actor) && Actor->GetWorld() == EditorWorld()) Result.Add(Actor);
+    }
     return Result;
 }
 FAuroraViewActorDragCapture FAuroraViewNativeShowcase::CaptureCompleteActorSelection(uint64 WidgetGeneration) const
@@ -263,7 +277,7 @@ void FAuroraViewNativeShowcase::RecordActorDragDecision(const TCHAR* Phase, cons
     LastNativeDrag->SetNumberField(TEXT("nonActorCount"), Decision.NonActors);
     LastNativeDrag->SetNumberField(TEXT("limit"), AuroraView::MaxActorDragSelection);
     LastNativeDrag->SetNumberField(TEXT("hostSeconds"), FPlatformTime::Seconds());
-    LastNativeDrag->SetStringField(TEXT("generation"), LexToString(Module.GetGeneration(Id)));
+    LastNativeDrag->SetStringField(TEXT("generation"), AuroraViewCompatibility::UInt64String(Module.GetGeneration(Id)));
     if (!Decision.Allowed)
         UE_LOG(LogAuroraViewActorDrag, Warning, TEXT("Actor drag rejected: %s; selected=%d eligible=%d limit=%d"),
             UTF8_TO_TCHAR(Decision.Reason), static_cast<int32>(Decision.Selected),
@@ -298,9 +312,9 @@ TSharedRef<FJsonObject> FAuroraViewNativeShowcase::Snapshot()
     RefreshScope();
     const auto State = MakeShared<FJsonObject>();
     State->SetStringField(TEXT("engineVersion"), FEngineVersion::Current().ToString());
-    State->SetStringField(TEXT("generation"), LexToString(Generation));
+    State->SetStringField(TEXT("generation"), AuroraViewCompatibility::UInt64String(Generation));
     State->SetStringField(TEXT("scope"), Scope);
-    State->SetStringField(TEXT("sequence"), LexToString(++Sequence));
+    State->SetStringField(TEXT("sequence"), AuroraViewCompatibility::UInt64String(++Sequence));
     State->SetNumberField(TEXT("hostSeconds"), FPlatformTime::Seconds());
     State->SetBoolField(TEXT("gameThread"), IsInGameThread());
     State->SetBoolField(TEXT("editorWorldAvailable"), World.IsValid());
@@ -315,7 +329,10 @@ TSharedRef<FJsonObject> FAuroraViewNativeShowcase::Snapshot()
     }
     int32 ActualSelectedCount = 0;
     if (GEditor) for (FSelectionIterator It(*GEditor->GetSelectedActors()); It; ++It)
-        if (const AActor* Actor = Cast<AActor>(*It); IsValid(Actor) && Actor->GetWorld() == World.Get()) ++ActualSelectedCount;
+    {
+        const AActor* Actor = Cast<AActor>(*It);
+        if (IsValid(Actor) && Actor->GetWorld() == World.Get()) ++ActualSelectedCount;
+    }
     State->SetNumberField(TEXT("selectedActorCount"), ActualSelectedCount);
     State->SetBoolField(TEXT("selectionTruncated"), ActualSelectedCount != Selection.Num());
     State->SetArrayField(TEXT("selectedActorIds"), Selection);
@@ -339,11 +356,15 @@ TSharedRef<FJsonObject> FAuroraViewNativeShowcase::Snapshot()
     {
         const auto Item = MakeShared<FJsonObject>();
         Item->SetStringField(TEXT("name"), Asset.AssetName.ToString());
+#if ENGINE_MAJOR_VERSION >= 5
         Item->SetStringField(TEXT("class"), Asset.AssetClassPath.ToString());
+#else
+        Item->SetStringField(TEXT("class"), Asset.AssetClass.ToString());
+#endif
         Assets.Add(MakeShared<FJsonValueObject>(Item));
     }
     State->SetArrayField(TEXT("assets"), Assets);
-    if (LastNativeDrag) State->SetObjectField(TEXT("nativeDrag"), LastNativeDrag.ToSharedRef());
+    if (LastNativeDrag.IsValid()) State->SetObjectField(TEXT("nativeDrag"), LastNativeDrag.ToSharedRef());
     State->SetStringField(TEXT("assetSelectionSource"), AssetSelectionSource);
     State->SetNumberField(TEXT("assetSelectionHostSeconds"), AssetSelectionTime);
     return State;
@@ -390,7 +411,7 @@ void FAuroraViewNativeShowcase::RecordNativeDrag(const FString& Phase, const FSt
     LastNativeDrag->SetStringField(TEXT("kind"), Kind);
     LastNativeDrag->SetNumberField(TEXT("count"), Count);
     LastNativeDrag->SetNumberField(TEXT("hostSeconds"), FPlatformTime::Seconds());
-    LastNativeDrag->SetStringField(TEXT("generation"), LexToString(Generation));
+    LastNativeDrag->SetStringField(TEXT("generation"), AuroraViewCompatibility::UInt64String(Generation));
     // Started means only that Slate created an operation. Destination acceptance
     // and viewport/Outliner host changes must be observed independently.
 }
@@ -406,7 +427,7 @@ TSharedRef<SWidget> FAuroraViewNativeShowcase::MakeWorkspace(const TSharedRef<SD
     Config.OnAssetSelected = FOnAssetSelected::CreateLambda([PickerHost, WidgetGeneration](const FAssetData& Asset)
     {
         const auto Self = PickerHost.Pin();
-        if (Self && Self->IsInteractionCurrent(WidgetGeneration)) Self->InspectAsset(Asset);
+        if (Self.IsValid() && Self->IsInteractionCurrent(WidgetGeneration)) Self->InspectAsset(Asset);
     });
     const auto AssetWidget = FModuleManager::LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"))
         .Get().CreateAssetPicker(Config);
@@ -414,12 +435,15 @@ TSharedRef<SWidget> FAuroraViewNativeShowcase::MakeWorkspace(const TSharedRef<SD
     TWeakPtr<FAuroraViewNativeShowcase> Weak = AsShared();
     // A private panel retained by Slate must not retain an active old Outliner.
     for (const auto& Old : OutlinerHosts)
-        if (const auto Container = Old.Pin()) Container->SetContent(SNullWidget::NullWidget);
+    {
+        const auto Container = Old.Pin();
+        if (Container.IsValid()) Container->SetContent(SNullWidget::NullWidget);
+    }
     OutlinerHosts.RemoveAll([](const TWeakPtr<SBox>& Old) { return !Old.IsValid(); });
     const auto OutlinerContainer = SNew(SBox).IsEnabled_Lambda([Weak, WidgetGeneration]()
     {
         const auto Self = Weak.Pin();
-        return Self && Self->IsInteractionCurrent(WidgetGeneration)
+        return Self.IsValid() && Self->IsInteractionCurrent(WidgetGeneration)
             && Self->OutlinerWorld.IsValid() && Self->OutlinerWorld.Get() == EditorWorld();
     });
     OutlinerHost = OutlinerContainer;
@@ -437,15 +461,33 @@ void FAuroraViewNativeShowcase::RebuildOutliner(UWorld* Current)
         Current && Current == EditorWorld()))
     { ClearOutliners(); return; }
     const auto Container = OutlinerHost.Pin();
-    if (!Container) return;
+    if (!Container.IsValid()) return;
     Container->SetContent(SNullWidget::NullWidget);
     if (!AuroraView::CanBuildNativeOutliner(BuildingGeneration, Module.GetGeneration(Id), bStopped,
         Current == EditorWorld()))
     { ClearOutliners(); return; }
+#if ENGINE_MAJOR_VERSION >= 5
     FSceneOutlinerInitializationOptions Options;
     Options.bShowHeaderRow = true;
     const auto Outliner = FModuleManager::LoadModuleChecked<FSceneOutlinerModule>(TEXT("SceneOutliner"))
         .CreateActorBrowser(Options, TWeakObjectPtr<UWorld>(Current));
+#else
+    SceneOutliner::FInitializationOptions Options;
+    Options.bShowHeaderRow = true;
+    Options.Mode = ESceneOutlinerMode::ActorBrowsing;
+#if ENGINE_MINOR_VERSION >= 26
+    Options.SpecifiedWorldToDisplay = Current;
+#endif
+    // UE4.18 lacks the world argument. Its native browser follows Editor state;
+    // filter foreign-world actors and retain the same generation/world guards.
+    const TWeakObjectPtr<UWorld> BrowsingWorld(Current);
+    Options.Filters->AddFilterPredicate(SceneOutliner::FActorFilterPredicate::CreateLambda(
+        [BrowsingWorld](const AActor* Actor)
+        { return BrowsingWorld.IsValid() && IsValid(Actor) && Actor->GetWorld() == BrowsingWorld.Get(); }),
+        SceneOutliner::EDefaultFilterBehaviour::Pass);
+    const auto Outliner = FModuleManager::LoadModuleChecked<FSceneOutlinerModule>(TEXT("SceneOutliner"))
+        .CreateSceneOutliner(Options, FOnActorPicked());
+#endif
 #if WITH_DEV_AUTOMATION_TESTS
     ++OutlinerBuildCountForTesting;
 #endif
@@ -460,7 +502,7 @@ void FAuroraViewNativeShowcase::RebuildOutliner(UWorld* Current)
 FAuroraViewReply FAuroraViewNativeShowcase::SelectActor(const TSharedPtr<FJsonObject>& Params)
 {
     FString ActorId;
-    if (!Params || !Params->TryGetStringField(TEXT("actorId"), ActorId)) return Failure(TEXT("INVALID_PARAMS"), TEXT("actorId required"));
+    if (!Params.IsValid() || !Params->TryGetStringField(TEXT("actorId"), ActorId)) return Failure(TEXT("INVALID_PARAMS"), TEXT("actorId required"));
     AActor* Actor = ResolveActor(ActorId);
     if (!Actor || !GEditor) return Failure(TEXT("STALE_ACTOR"), TEXT("Actor is absent from this world/session"));
     const TWeakObjectPtr<AActor> WeakActor(Actor);
@@ -484,7 +526,7 @@ FAuroraViewReply FAuroraViewNativeShowcase::SetTransform(const TSharedPtr<FJsonO
     const TSharedPtr<FJsonObject>* Desired = nullptr;
     const TSharedPtr<FJsonObject>* Expected = nullptr;
     FTransform Next, Previous;
-    if (!Params || !Params->TryGetStringField(TEXT("actorId"), ActorId)
+    if (!Params.IsValid() || !Params->TryGetStringField(TEXT("actorId"), ActorId)
         || !Params->TryGetObjectField(TEXT("transform"), Desired) || !ReadTransform(*Desired, Next)
         || !Params->TryGetObjectField(TEXT("expected"), Expected) || !ReadTransform(*Expected, Previous))
         return Failure(TEXT("INVALID_PARAMS"), TEXT("Finite bounded location/rotation/positive scale and expected transform required"));

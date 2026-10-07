@@ -2,7 +2,12 @@
 
 #include "CoreMinimal.h"
 #include "AuroraViewEditorModule.h"
+#include "AuroraViewCompatibility.h"
+#if ENGINE_MAJOR_VERSION >= 5 || ENGINE_MINOR_VERSION >= 26
 #include "AssetRegistry/AssetData.h"
+#else
+#include "AssetData.h"
+#endif
 #include "Containers/Ticker.h"
 #include "NativeInteractionGuards.h"
 
@@ -61,7 +66,7 @@ private:
     FAuroraViewReply SelectActor(const TSharedPtr<FJsonObject>& Params);
     FAuroraViewEditorModule& Module;
     FName Id;
-    FTSTicker::FDelegateHandle TickHandle;
+    AuroraViewCompatibility::FTickerHandle TickHandle;
     FDelegateHandle AssetSelectionHandle;
     TWeakObjectPtr<UWorld> World;
     TWeakObjectPtr<UWorld> OutlinerWorld;

@@ -44,6 +44,7 @@ public:
     bool UnbindCall(FName Id, const FString& Method);
     void OpenDemo();
 private:
+    void InitializeShowcase();
     struct FImpl;
     TUniquePtr<FImpl> Impl;
 };

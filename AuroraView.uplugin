@@ -26,7 +26,7 @@
     {
       "Name": "AuroraViewEditor",
       "Type": "Editor",
-      "LoadingPhase": "PostEngineInit",
+      "LoadingPhase": "Default",
       "PlatformAllowList": [
         "Win64"
       ],

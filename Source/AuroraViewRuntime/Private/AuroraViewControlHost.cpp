@@ -155,7 +155,7 @@ struct FAuroraViewControlHost::FImpl
         FTCHARToUTF8 Bytes(*Json);
         if (Bytes.Length() + 1 > MaxFrame || Client->Output.Num() - Client->OutputOffset + Bytes.Length() + 1 > MaxFrame * 2)
         { Client->bClosed = true; return false; }
-        if (Client->OutputOffset) { Client->Output.RemoveAt(0, Client->OutputOffset, false); Client->OutputOffset = 0; }
+        if (Client->OutputOffset) { AuroraViewCompatibility::RemoveAtNoShrink(Client->Output, 0, Client->OutputOffset); Client->OutputOffset = 0; }
         Client->Output.Append(reinterpret_cast<const uint8*>(Bytes.Get()), Bytes.Length());
         Client->Output.Add('\n');
         return true;
@@ -440,9 +440,9 @@ struct FAuroraViewControlHost::FImpl
                 int32 Newline = INDEX_NONE;
                 if (!Item->Input.Find('\n', Newline)) break;
                 if (Newline + 1 > MaxFrame) { Item->bClosed = true; break; }
-                TArray<uint8> Bytes; Bytes.Append(Item->Input.GetData(), Newline); Item->Input.RemoveAt(0, Newline + 1, false);
+                TArray<uint8> Bytes; Bytes.Append(Item->Input.GetData(), Newline); AuroraViewCompatibility::RemoveAtNoShrink(Item->Input, 0, Newline + 1);
                 if (Bytes.Num() && Bytes.Last() == '\r') Bytes.RemoveAt(Bytes.Num() - 1);
-                if (Bytes.Num() >= 3 && Bytes[0] == 0xef && Bytes[1] == 0xbb && Bytes[2] == 0xbf) Bytes.RemoveAt(0, 3, false);
+                if (Bytes.Num() >= 3 && Bytes[0] == 0xef && Bytes[1] == 0xbb && Bytes[2] == 0xbf) AuroraViewCompatibility::RemoveAtNoShrink(Bytes, 0, 3);
                 if (Bytes.Num() == 0) continue;
                 if (!BoundedJson(Bytes)) { Item->bClosed = true; break; }
                 FUTF8ToTCHAR Decoded(reinterpret_cast<const ANSICHAR*>(Bytes.GetData()), Bytes.Num());

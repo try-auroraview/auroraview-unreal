@@ -2,10 +2,12 @@
 #include "Modules/ModuleManager.h"
 #include "AuroraViewNativeShowcase.h"
 #include "AuroraViewFixture.h"
+#include "Editor.h"
 #include "HAL/IConsoleManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/CoreDelegates.h"
 
 namespace {
 FAuroraViewRuntimeModule& Host() {
@@ -13,6 +15,7 @@ FAuroraViewRuntimeModule& Host() {
 }
 }
 struct FAuroraViewEditorModule::FImpl {
+    FDelegateHandle PostEngineInit;
     TSharedPtr<FAuroraViewNativeShowcase> Showcase;
     IConsoleObject* DockCommand = nullptr;
     IConsoleObject* FixtureCommand = nullptr;
@@ -23,6 +26,13 @@ void FAuroraViewEditorModule::StartupModule() {
     Host();
     if (IsRunningCommandlet()) return;
     Impl = MakeUnique<FImpl>();
+    // Default loading makes the preparation UCLASS available to UE4 commandlets.
+    // Editor-only UI registration still waits until the engine is initialized.
+    if (GEditor) InitializeShowcase();
+    else Impl->PostEngineInit = FCoreDelegates::OnPostEngineInit.AddRaw(this, &FAuroraViewEditorModule::InitializeShowcase);
+}
+void FAuroraViewEditorModule::InitializeShowcase() {
+    if (!Impl || Impl->Showcase.IsValid()) return;
     FString Html, Error;
     const auto Plugin = IPluginManager::Get().FindPlugin(TEXT("AuroraView"));
     Impl->Showcase = MakeShared<FAuroraViewNativeShowcase>(*this);
@@ -41,6 +51,7 @@ void FAuroraViewEditorModule::StartupModule() {
 }
 void FAuroraViewEditorModule::ShutdownModule() {
     if (!Impl) return;
+    FCoreDelegates::OnPostEngineInit.Remove(Impl->PostEngineInit);
     if (Impl->Showcase.IsValid()) Impl->Showcase->Stop();
     if (Impl->DockCommand) IConsoleManager::Get().UnregisterConsoleObject(Impl->DockCommand, false);
     if (Impl->FixtureCommand) IConsoleManager::Get().UnregisterConsoleObject(Impl->FixtureCommand, false);

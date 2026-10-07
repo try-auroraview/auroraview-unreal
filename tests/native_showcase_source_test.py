@@ -93,7 +93,7 @@ class NativeSourceTests(unittest.TestCase):
     def test_native_map_preparation_has_isolation_and_disk_save_guards(self):
         src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewPrepareCommandlet.cpp').read_text()
         for marker in ('AuroraViewNativeFixture', '/Game/AuroraViewAcceptance/', 'IsValidLongPackageName',
-                       'FileExists(*Filename)', 'Refusing to overwrite', 'FEditorFileUtils::SaveMap',
+                       'FileExists(*Filename)', 'Refusing to overwrite', 'UEditorLoadingAndSavingUtils::SaveMap',
                        'FileSize(*Filename) <= 0', 'fixture.json'):
             self.assertIn(marker,src)
         self.assertLess(src.index('FileExists(*Filename)'),src.index('GEditor->NewMap()'))

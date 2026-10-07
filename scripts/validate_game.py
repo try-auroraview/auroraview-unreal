@@ -88,6 +88,15 @@ def verify_inputs(engine, package):
 
 
 def create_project(root, package, version):
+    # Match the installed engine defaults instead of overriding a shared Editor
+    # build environment. These target settings do not exist in UE 4.18.
+    major, minor = (int(part) for part in version.split('.')[:2])
+    settings = ''
+    if major >= 5:
+        settings = ('        DefaultBuildSettings = BuildSettingsVersion.Latest;\n'
+                    '        IncludeOrderVersion = EngineIncludeOrderVersion.Latest;\n')
+    elif (major, minor) >= (4, 26):
+        settings = '        DefaultBuildSettings = BuildSettingsVersion.V2;\n'
     source = root / 'Source' / PROJECT
     source.mkdir(parents=True)
     plugins = root / 'Plugins'
@@ -104,6 +113,7 @@ def create_project(root, package, version):
         f'public class {PROJECT}Target : TargetRules {{\n'
         f'    public {PROJECT}Target(TargetInfo Target) : base(Target) {{\n'
         '        Type = TargetType.Game;\n'
+        + settings +
         f'        ExtraModuleNames.Add("{PROJECT}");\n'
         '    }\n}\n', encoding='utf-8')
     (root / 'Source' / f'{PROJECT}Editor.Target.cs').write_text(
@@ -111,6 +121,7 @@ def create_project(root, package, version):
         f'public class {PROJECT}EditorTarget : TargetRules {{\n'
         f'    public {PROJECT}EditorTarget(TargetInfo Target) : base(Target) {{\n'
         '        Type = TargetType.Editor;\n'
+        + settings +
         f'        ExtraModuleNames.Add("{PROJECT}");\n'
         '    }\n}\n', encoding='utf-8')
     (source / f'{PROJECT}.Build.cs').write_text(

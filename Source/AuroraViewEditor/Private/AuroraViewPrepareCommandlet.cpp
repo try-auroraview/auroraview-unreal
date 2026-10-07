@@ -41,7 +41,7 @@ int32 UAuroraViewPrepareCommandlet::Main(const FString& Params)
     }
     IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename), true);
     UWorld* World = GEditor->NewMap();
-    if (!World || !FEditorFileUtils::SaveMap(World, Filename) || IFileManager::Get().FileSize(*Filename) <= 0)
+    if (!World || !UEditorLoadingAndSavingUtils::SaveMap(World, Map) || IFileManager::Get().FileSize(*Filename) <= 0)
     {
         UE_LOG(LogTemp, Error, TEXT("Could not create and save the native acceptance map"));
         return 3;

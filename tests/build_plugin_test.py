@@ -70,7 +70,7 @@ class BuildPluginTests(unittest.TestCase):
         source, engine = cls.template_source, cls.template_engine
         source.mkdir()
         write(source / 'AuroraView.uplugin', json.dumps({'FileVersion': 3, 'SupportedTargetPlatforms': ['Win64'],
-            'Modules': [{'Name': builder.MODULE, 'Type': 'Editor', 'LoadingPhase': 'PostEngineInit',
+            'Modules': [{'Name': builder.MODULE, 'Type': 'Editor', 'LoadingPhase': 'Default',
                          'PlatformAllowList': ['Win64'], 'TargetAllowList': ['Editor']},
                         {'Name': builder.RUNTIME_MODULE, 'Type': 'Runtime', 'LoadingPhase': 'Default',
                          'PlatformAllowList': ['Win64']}]}))
@@ -215,6 +215,14 @@ class BuildPluginTests(unittest.TestCase):
         self.assertEqual(receipt['status'], 'pass', receipt['errors'])
         self.assertTrue(receipt['source']['dirty'])
         self.assertIn('Resources/untracked.js', receipt['source']['files'])
+
+    def test_yearless_ue58_toolchain_log_preserves_actual_version(self):
+        log = self.root / 'ue58.log'
+        log.write_text(TOOLCHAIN_LOG.replace('Visual Studio 2022 ', 'Visual Studio '), encoding='utf-8')
+        evidence = builder.compiler_evidence(log)
+        self.assertEqual(evidence[0]['compiler'], 'Visual Studio')
+        self.assertEqual(evidence[0]['toolchain_version'], '14.44.35221')
+        self.assertEqual(evidence[0]['windows_sdk_version'], '10.0.26100.0')
 
     def test_preflight_blocks_other_engine_versions_before_uat(self):
         write(self.version, json.dumps({'MajorVersion': 5, 'MinorVersion': 6}))

@@ -113,6 +113,20 @@ class PackagedGameGuards(unittest.TestCase):
             self.assertNotIn('-nocompileeditor', command)
             self.assertEqual('-VS2019' in command, policy['version'] == '4.26')
 
+    def test_fixture_targets_follow_engine_defaults_without_shared_build_override(self):
+        package = self.root / 'Package'
+        package.mkdir()
+        for version in validator.preflight_engine.SUPPORTED_VERSIONS:
+            root = self.root / version
+            validator.create_project(root, package, version)
+            for suffix in ['.Target.cs', 'Editor.Target.cs']:
+                text = (root / 'Source' / f'{validator.PROJECT}{suffix}').read_text()
+                self.assertNotIn('bOverrideBuildEnvironment', text)
+                self.assertNotIn('BuildEnvironment =', text)
+                self.assertEqual('BuildSettingsVersion.Latest' in text, version.startswith('5.'))
+                self.assertEqual('EngineIncludeOrderVersion.Latest' in text, version.startswith('5.'))
+                self.assertEqual('BuildSettingsVersion.V2' in text, version == '4.26')
+
 
 def preflight_versions():
     return [{'MajorVersion': int(version.split('.')[0]), 'MinorVersion': int(version.split('.')[1])}

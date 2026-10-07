@@ -162,7 +162,7 @@ def validate_descriptor(path):
             any(not isinstance(module, dict) for module in modules)):
         raise BuildError(f'Descriptor must declare both Win64 Runtime and Editor modules: {path}')
     by_name = {module.get('Name'): module for module in modules}
-    for name, kind, phase in [(MODULE, 'Editor', 'PostEngineInit'), (RUNTIME_MODULE, 'Runtime', 'Default')]:
+    for name, kind, phase in [(MODULE, 'Editor', 'Default'), (RUNTIME_MODULE, 'Runtime', 'Default')]:
         module = by_name.get(name, {})
         platforms = module.get('PlatformAllowList', module.get('WhitelistPlatforms'))
         if module.get('Type') != kind or module.get('LoadingPhase') != phase or platforms != ['Win64']:
@@ -214,7 +214,7 @@ def compiler_evidence(log_path, policy=None):
                     if path.is_file() and path.suffix.lower() in ['.txt', '.log'])
     text = '\n'.join(path.read_text(encoding='utf-8-sig', errors='replace') for path in logs)
     toolchains = []
-    pattern = re.compile(r'Using\s+(Visual Studio\s+\d+)\s+(\d+(?:\.\d+)+)\s+toolchain', re.IGNORECASE)
+    pattern = re.compile(r'Using\s+(Visual Studio(?:\s+\d{4})?)\s+(\d+(?:\.\d+)+)\s+toolchain', re.IGNORECASE)
     sdk_pattern = re.compile(r'Windows\s+(\d+(?:\.\d+)+)\s+SDK', re.IGNORECASE)
 
     def parenthesized_path(tail):

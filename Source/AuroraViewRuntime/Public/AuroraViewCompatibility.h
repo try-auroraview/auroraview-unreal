@@ -19,6 +19,16 @@ inline FString UInt64String(uint64 Value)
     return FString::Printf(TEXT("%llu"), static_cast<unsigned long long>(Value));
 }
 
+template <typename ElementType, typename AllocatorType>
+inline void RemoveAtNoShrink(TArray<ElementType, AllocatorType>& Array, int32 Index, int32 Count)
+{
+#if ENGINE_MAJOR_VERSION >= 5
+    Array.RemoveAt(Index, Count, EAllowShrinking::No);
+#else
+    Array.RemoveAt(Index, Count, false);
+#endif
+}
+
 #if ENGINE_MAJOR_VERSION >= 5
 using FTicker = FTSTicker;
 using FTickerHandle = FTSTicker::FDelegateHandle;

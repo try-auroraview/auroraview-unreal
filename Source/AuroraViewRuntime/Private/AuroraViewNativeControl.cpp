@@ -84,14 +84,19 @@ FAuroraViewReply Call(UObject* Object, UFunction* Function, const TSharedPtr<FJs
             && !Property->HasAnyPropertyFlags(CPF_ReferenceParm | CPF_ConstParm);
         if (bPureOut) continue;
         InputNames.Add(Property->GetName());
-        const auto* Value = Args.IsValid() ? Args->Values.Find(Property->GetName()) : nullptr;
-        if (!Value) return ControlError(TEXT("INVALID_PARAMS"), TEXT("Missing argument: ") + Property->GetName());
-        if (!FJsonObjectConverter::JsonValueToUProperty(*Value, Property,
+        const auto Value = Args.IsValid() ? Args->TryGetField(Property->GetName()) : TSharedPtr<FJsonValue>();
+        if (!Value.IsValid()) return ControlError(TEXT("INVALID_PARAMS"), TEXT("Missing argument: ") + Property->GetName());
+        if (!FJsonObjectConverter::JsonValueToUProperty(Value, Property,
             Property->ContainerPtrToValuePtr<void>(Memory), 0, 0))
             return ControlError(TEXT("INVALID_PARAMS"), TEXT("Cannot convert argument: ") + Property->GetName());
     }
     if (Args.IsValid()) for (const auto& Pair : Args->Values)
-        if (!InputNames.Contains(Pair.Key)) return ControlError(TEXT("INVALID_PARAMS"), TEXT("Unknown argument: ") + Pair.Key);
+    {
+        // UE5.8 stores JSON keys as FSharedString. Preserve the full length,
+        // including embedded nulls, when checking the declared argument names.
+        const FString Key(Pair.Key.Len(), *Pair.Key);
+        if (!InputNames.Contains(Key)) return ControlError(TEXT("INVALID_PARAMS"), TEXT("Unknown argument: ") + Key);
+    }
     Object->ProcessEvent(Function, Memory);
     auto Result = MakeShared<FJsonObject>();
     auto Outputs = MakeShared<FJsonObject>();

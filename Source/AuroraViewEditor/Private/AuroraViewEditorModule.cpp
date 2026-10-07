@@ -1,6 +1,6 @@
 #include "AuroraViewEditorModule.h"
 #include "AuroraViewEndpoint.h"
-#include "AuroraViewWorkspace.h"
+#include "AuroraViewNativeShowcase.h"
 #include "Containers/Ticker.h"
 #include "Dom/JsonObject.h"
 #include "Framework/Application/SlateApplication.h"
@@ -286,6 +286,7 @@ struct FAuroraViewEditorModule::FImpl
     FDelegateHandle ExitHandle;
     IConsoleObject* DemoCommand = nullptr;
     IConsoleObject* DockCommand = nullptr;
+    TSharedPtr<FAuroraViewNativeShowcase> Showcase;
     bool bStopping = false;
     uint64 NextPresentationGeneration = 0;
     FString Root;
@@ -311,6 +312,7 @@ struct FAuroraViewEditorModule::FImpl
         check(IsInGameThread());
         if (bStopping) return;
         bStopping = true;
+        if (Showcase) Showcase->Stop();
         FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
         TArray<TSharedPtr<FSession>> Snapshot;
         Sessions.GenerateValueArray(Snapshot);
@@ -358,19 +360,11 @@ void FAuroraViewEditorModule::StartupModule()
         TEXT("AuroraView.Demo"), TEXT("Open an AuroraView native Editor test view"),
         FConsoleCommandDelegate::CreateRaw(this, &FAuroraViewEditorModule::OpenDemo), ECVF_Default);
     FString DockHtml, DockError;
-    const FName DockId(TEXT("NativeShowcase"));
-    DockHtml = TEXT("<style>body{background:#171b24;color:#e8edf6;font:16px system-ui;padding:32px}")
-        TEXT("button{padding:12px;border:0;border-radius:6px}</style><h1>AuroraView native workspace</h1>")
-        TEXT("<p>The tabs, docking and layout are real Slate widgets. Selection and asset panels are unimplemented in stage 1.</p>")
-        TEXT("<button onclick=\"auroraview.call('api.echo',{native:true}).then(v=>document.querySelector('pre').textContent=JSON.stringify(v))\">Run native echo</button><pre></pre>");
-    if (!DockHtml.IsEmpty())
-    {
-        BindCall(DockId, TEXT("api.echo"), [](const TSharedPtr<FJsonValue>& Params)
-            { return FAuroraViewReply::Success(Params); });
-        RegisterDocked(DockId, DockHtml, FText::FromString(TEXT("AuroraView Native Showcase")), DockError,
-            [](const TSharedRef<SDockTab>& Tab, const TSharedRef<SWidget>& Browser)
-            { return SNew(SAuroraViewWorkspace).OwnerTab(Tab).Inspector(Browser); });
-    }
+    const FName DockId = FAuroraViewNativeShowcase::ViewId();
+    Impl->Showcase = MakeShared<FAuroraViewNativeShowcase>(*this);
+    if (!ReadAsset(Impl->Root, TEXT("Resources/native_showcase.html"), DockHtml)
+        || !Impl->Showcase->Start(DockHtml, DockError))
+        UE_LOG(LogAuroraView, Error, TEXT("Native showcase registration failed: %s"), *DockError);
     Impl->DockCommand = IConsoleManager::Get().RegisterConsoleCommand(
         TEXT("AuroraView.Showcase"), TEXT("Open the native docked acceptance workspace"),
         FConsoleCommandDelegate::CreateLambda([this, DockId]()

@@ -1,6 +1,6 @@
 # Native showcase follow-up candidate
 
-This is stage 1, layered onto public commit `934fa5301a3e78ca0e41bf3890b0cc991c239e11`
+This is cumulative stage 2, layered onto public commit `934fa5301a3e78ca0e41bf3890b0cc991c239e11`
 (tree `2ad6955855e990f3d8120fec641ec38954743972`). The original feature source was
 prepared from the exact runtime tree of
 [6eb8fbd](https://github.com/try-auroraview/auroraview-unreal/commit/6eb8fbd44af951a8812a6df473e83d7a2adc96c5)
@@ -104,14 +104,90 @@ Authored native Automation includes `AuroraView.Editor.DockFactoryReentrancy`
 (map growth, self-close, remove/replace, close/reopen) and
 `AuroraView.Editor.FailedDockRecovery` (retry and retained manually closed error
 tabs). These tests, `DockedLifecycle`, and the strict-type `BridgeRoundTrip` have
-not been compiled or executed for this stage. `scripts/check.sh` runs five
-static dock/source regression checks in addition to the baseline source-safe
-suite. Static markers are not compiler or native behavioral evidence.
+not been compiled or executed for this stage. Stage 1 introduced five
+static dock/source regression checks; the cumulative stage 2 suite below
+adds typed scope and retained-Outliner guards. Static markers are not compiler or native behavioral evidence.
 
 Cross-window CEF focus and Chinese IME remain blocked/unverified. Installed
 source inspection found stale activation/IME-parent-cache risks; no engine-private
 patch or unsupported SetParentWindow-only repair is introduced.
 
-Stage 2 will add typed selection, push events and the real native Assets/Outliner
-panels. Stage 3 will add custom Slate drag/drop surfaces and guarded fixtures.
-Those later-stage paths are absent from this stage.
+
+## Stage 2: typed native inspector
+
+The showcase replaces the two stage-1 placeholder panels with the engine's
+AssetPicker and actor-browser Outliner. Selection from native widgets is sampled
+from actual Editor state. Actor selection is observed on GameThread at most five
+times per second while the inspector subscribes. AssetPicker selection and the
+primary Content Browser's own selection event update the inspected asset data.
+The host removes only its own delegate handle at shutdown.
+
+`showcase.subscribe` returns the initial snapshot and enables `showcase.state`
+events through the unchanged Core bridge. Every snapshot includes browser
+generation, opaque scope, sequence, monotonic host time, actual selected actor IDs
+and values. Push refuses unready/closed views. A new browser generation clears
+subscription, actor references and restore state; world changes clear opaque IDs
+and produce a new scope. The default command owns one showcase view; the fixture CEF test uses its own
+independently scoped host/view ID. Each observer does
+not intercept or unsubscribe any other view, plugin or global selection observer.
+
+Actor IDs are random, session/world-scoped GUIDs backed by checked weak references.
+No browser-provided object path is loaded or resolved. The inspector can select
+only actors already observed in that session. Native selection can be rejected
+by the Editor, so the response includes observed state and `selectionMatched`.
+
+Only full transforms are editable: finite location ±10,000,000 cm, rotation
+±360 degrees (roll/pitch/yaw), and positive scale 0.001–1000. Exactly one selected
+current Editor-world actor with a root, unlocked actor transform and unlocked
+level is required. PIE,
+stale IDs, invalid shapes and stale expected transforms are rejected. Changes use
+FScopedTransaction, actor/root Modify, SetActorTransform and PostEditMove, then
+return actual host values and a comparison. Restore is a second native transaction
+that restores this session's last edit only if no intervening host edit changed it.
+It does not issue a generic global Undo command. Native Ctrl+Z must be tested too.
+Material, light, arbitrary property editing and remote/eval endpoints are
+unimplemented.
+
+Asset reveal calls the actual Content Browser API. Its return status is only
+`submitted`: synchronization runs on a later tick and may open a browser window.
+A separate actual primary-browser selection observation is required to prove it.
+Empty selection is not presented as a working clear-selection operation.
+
+`AuroraView.Editor.TypedInspectorGuards` tests invalid typed requests, opaque-ID
+scope and actual current selection snapshots without editing a user's world.
+The approved disposable-fixture test adds mutations, Undo/restore and assertions
+in the next stage. UI host feedback is not a test pass merely because JSON arrived.
+
+The native actor-browser is explicitly scoped to the current Editor world. Its
+container disables itself immediately when that world changes or PIE begins;
+the observer retires/rebuilds the widget for the next idle Editor world. It is
+released before Editor services teardown. Creating the Outliner does not claim
+its later-tick population/selection has already completed.
+
+## Stage 2 boundary and retained-Outliner repair
+
+The reviewed shared host and its native interaction policy are carried intact.
+That includes dormant complete-selection drag-admission helpers and feedback;
+no custom Slate drag surface calls them in this stage. The native AssetPicker's
+own drag capability remains enabled. The actual custom source/drop target,
+fixture mutations, acceptance registry and runner arrive in stage 3.
+
+Generation zero or Stop clears every retained Outliner child, including later
+refreshes. A new native actor browser is allowed only for a matching live,
+nonzero presentation generation and current idle Editor world. Generation/world
+and container ownership are rechecked across native construction and installation.
+The complete reviewed policy header is tested by 28 executable standalone C++
+cases, including closed/mismatched-generation retirement. The actual retained
+native-container regression requires the guarded fixture added in stage 3 and
+is not present or claimed as run here.
+
+Pristine forms follow actual native single selection and same-actor updates.
+Dirty drafts expose keep/discard/reload choices; deselection, multiselection or
+truncation disables mutations. All reviewed weak actor/root/world/session
+revalidation and nested-mutation guards are retained. Native callbacks may
+interrupt a change; an interrupted result never promises an unobserved rollback.
+
+The source-safe suite adds 12 mock-DOM inspector tests, 28 production policy
+cases and eight static source guards. None compiles or executes Unreal. All
+feature UHT/UBT/package, typed mutation, real selection/push and native Outliner
+retirement gates remain `not_run` for this exact stage.

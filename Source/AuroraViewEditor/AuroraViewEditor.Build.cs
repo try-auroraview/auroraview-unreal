@@ -17,10 +17,11 @@ public class AuroraViewEditor : ModuleRules
         }
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Json" });
         PrivateDependencyModuleNames.AddRange(new[] {
-            "Engine", "UnrealEd", "Slate", "SlateCore", "WebBrowser", "Projects"
+            "Engine", "UnrealEd", "Slate", "SlateCore", "WebBrowser", "Projects", "ContentBrowser", "SceneOutliner"
         });
         foreach (string RelativeFile in new[] {
             "Resources/ue_transport.js", "Resources/ue_bootstrap.js", "Resources/demo.html",
+            "Resources/native_showcase.html",
             "ThirdParty/AuroraViewCore/event_bridge.js",
             "ThirdParty/AuroraViewCore/bridge_stub.js",
             "ThirdParty/AuroraViewCore/LICENSE",

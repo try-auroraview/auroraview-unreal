@@ -19,12 +19,29 @@ Editor tests are required against the exact follow-up source tree.
   remembered tab can affect its new stack; activation can update the global menu.
   The batch API does not independently honor tab locking. It is not a guessed
   per-tab ToggleSidebar API or an unconditional all-tabs/workspace-only action
-
+- CreateActorBrowser(options, explicit weak world) supplies native actor-browsing
+  mode and default columns. A raw default CreateSceneOutliner mode is not used
+- AssetPicker uses Single selection, Tile view and native FOnAssetSelected;
+  an invalid asset represents no selection. This is not a full multi-select API
+- GetSelectedAssets takes a fresh empty array and reads the primary browser.
+  With no primary browser, the engine does not clear old array contents
+- IsLockLocation() const is the Editor actor transform lock, including the
+  LevelInstance restriction; it is not a general selection/edit permission
+- Content Browser SyncBrowserToAssets is deferred and returns no result; the
+  source returns submitted, then waits for separately observed native selection
 Primary references for public API context:
 
 - [TabManager](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Slate/FTabManager)
 - [Sidebar semantics](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Slate/Framework/Docking/FTabManager/ToggleSidebarOpenTabs?application_version=5.5)
+- [Actor-browser module](https://dev.epicgames.com/documentation/unreal-engine/API/Editor/SceneOutliner/FSceneOutlinerModule)
+- [Native asset picker configuration](https://dev.epicgames.com/documentation/unreal-engine/API/Editor/ContentBrowser/FAssetPickerConfig)
 
-Online documentation may show a newer engine version. Exact installed UE 5.7
-headers and graphical behavior remain verification gates. Cross-window CEF
-activation and IME parent-cache rebinding are unverified.
+Online documentation may default to a later engine version; its overloads are
+not treated as proof of an installed engine's declarations. In particular, later
+sidebar APIs may take exception arguments that the audited 5.7 API does not.
+
+The installed SWebBrowserView/CEF/IME source audit also found stale-parent risks
+across two live native windows: parent-window updates do not prove complete
+activation-delegate/IME-cache rebinding. This is a source risk, not an observed
+runtime bug. Cross-window focus/IME remains a dedicated blocked acceptance case;
+no guessed private-engine patch or SetParentWindow-only fix is shipped.

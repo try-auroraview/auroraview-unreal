@@ -109,11 +109,12 @@ do not replace the pending corrected CEF rerun or these remaining gates.
 - The default sample only exposes read-only/echo diagnostic methods. Registering
   destructive editor methods requires its own explicit application design
 
-## Native follow-up stage 1
+## Native follow-up stage 2
 
-This stage adds native dock ownership, isolated private layouts and the reviewed
-callback/failed-tab lifecycle repairs. Native Assets/Outliner content and custom
-drag surfaces are not included yet.
+This cumulative stage adds typed selection/push, the Core inspector and real
+native Assets/Outliner widgets, with all reviewed mutation and generation-zero
+retirement repairs. Shared drag-admission helpers are included unchanged; custom
+Slate drag/drop surfaces and guarded fixtures remain for stage 3.
 
 - Exact-stage UHT generation and clean UE 5.7 Win64 compile/link/package: `not_run`
 - Exact-stage graphical Editor/CEF and authored native Automation tests: `not_run`

@@ -1,5 +1,11 @@
 # Native showcase follow-up candidate
 
+This document preserves the historical source-candidate review and its evidence
+at that stage. Its pending gates and source-identity statements do not describe
+the current Runtime/Editor implementation. See [building](building.md),
+[version validation](version-validation.md), and the receipts for the exact
+current commit when assessing current validation.
+
 This is cumulative stage 3 of the native follow-up series, layered onto public
 commit `934fa5301a3e78ca0e41bf3890b0cc991c239e11` (tree
 `2ad6955855e990f3d8120fec641ec38954743972`). The reviewed feature source was

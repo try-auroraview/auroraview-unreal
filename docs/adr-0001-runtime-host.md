@@ -20,4 +20,4 @@ Embedding a fixed Python ABI in every Unreal binary would increase legacy/compil
 
 The common Runtime API can control loaded reflected objects and project tools; it cannot make Editor-only or latent APIs synchronous Runtime functions. Native handlers run on GameThread and must remain bounded. External callbacks use bounded workers and cooperative completion. Authentication is explicit and loopback-only; broad control additionally requires an opt-in flag.
 
-Upstream factory wiring and reusable bridge/transport conformance are follow-up work documented in [upstream integration](../upstream-integration.md). Unreal-specific handles, thread affinity and packaging remain in this adapter.
+Upstream factory wiring and reusable bridge/transport conformance are follow-up work documented in [upstream integration](upstream-integration.md). Unreal-specific handles, thread affinity and packaging remain in this adapter.

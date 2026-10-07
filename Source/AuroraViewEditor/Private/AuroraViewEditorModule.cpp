@@ -130,8 +130,12 @@ struct FSession final : TSharedFromThis<FSession>
         }
         FString Id;
         const bool bUsableId = Message->TryGetStringField(TEXT("id"), Id) && !Id.IsEmpty() && Id.Len() <= 256;
-        FString Type;
-        if (!Message->TryGetStringField(TEXT("type"), Type) || Type.IsEmpty())
+        // TryGetStringField permits numeric-to-string coercion in Unreal.
+        // The wire discriminator must be a JSON string before conversion.
+        const TSharedPtr<FJsonValue>* TypeValue = Message->Values.Find(TEXT("type"));
+        const bool bStringType = TypeValue && TypeValue->IsValid() && (*TypeValue)->Type == EJson::String;
+        const FString Type = bStringType ? (*TypeValue)->AsString() : FString();
+        if (!bStringType || Type.IsEmpty())
         {
             if (bUsableId) Reply(Id, FAuroraViewReply::Failure(TEXT("InvalidRequestError"),
                 TEXT("Request type must be a nonempty string"), TEXT("INVALID_REQUEST")));

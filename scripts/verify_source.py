@@ -36,7 +36,8 @@ def main():
     assert 'Mailbox->PushControl(Generation, AuroraView::SessionMailbox::Kind::Ready)' in endpoint
     checks.append('enqueue_only_native_endpoint')
     assert 'bUsableId' in module and 'TEXT("INVALID_REQUEST")' in module
-    assert module.index('const bool bUsableId') < module.index('TryGetStringField(TEXT("type")')
+    assert module.index('const bool bUsableId') < module.index('Values.Find(TEXT("type"))')
+    assert '(*TypeValue)->Type == EJson::String' in module
     checks.append('usable_id_invalid_type_error_source_guard')
     sources = '\n'.join(p.read_text() for p in (ROOT / 'Source').rglob('*') if p.is_file())
     for prohibited in ['Python.h', 'PySide', 'GetForegroundWindow', 'SetParent(', 'system(', 'CreateProcess(']:

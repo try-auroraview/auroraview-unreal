@@ -13,7 +13,10 @@ struct FBridgeSmokeState
 {
     bool bEchoOnGameThread = false;
     bool bBrowserVerifiedResult = false;
-    bool bInvalidTypeRejected = false;
+    bool bReportReceived = false;
+    FString MissingTypeCode;
+    FString EmptyTypeCode;
+    FString NumericTypeCode;
     bool bMalformedHandlerRan = false;
     double Deadline = 0;
 };
@@ -25,10 +28,15 @@ public:
         : Test(InTest), State(InState) {}
     virtual bool Update() override
     {
-        if (!State->bBrowserVerifiedResult && FPlatformTime::Seconds() < State->Deadline) return false;
+        if (!State->bReportReceived && FPlatformTime::Seconds() < State->Deadline) return false;
+        Test->TestTrue(TEXT("Browser smoke report received"), State->bReportReceived);
         Test->TestTrue(TEXT("Real browser received the echo result"), State->bBrowserVerifiedResult);
         Test->TestTrue(TEXT("Host handler executed on GameThread"), State->bEchoOnGameThread);
-        Test->TestTrue(TEXT("Missing type receives INVALID_REQUEST"), State->bInvalidTypeRejected);
+        Test->AddInfo(FString::Printf(TEXT("Malformed type codes: missing=%s empty=%s numeric=%s"),
+            *State->MissingTypeCode, *State->EmptyTypeCode, *State->NumericTypeCode));
+        Test->TestEqual(TEXT("Missing type error code"), State->MissingTypeCode, FString(TEXT("INVALID_REQUEST")));
+        Test->TestEqual(TEXT("Empty type error code"), State->EmptyTypeCode, FString(TEXT("INVALID_REQUEST")));
+        Test->TestEqual(TEXT("Numeric type error code"), State->NumericTypeCode, FString(TEXT("INVALID_REQUEST")));
         Test->TestFalse(TEXT("Malformed request never invokes a host handler"), State->bMalformedHandlerRan);
         if (auto* Module = FModuleManager::GetModulePtr<FAuroraViewEditorModule>(TEXT("AuroraViewEditor")))
             Module->Remove(FName(TEXT("AuroraViewAutomation")));
@@ -60,7 +68,10 @@ bool FAuroraViewBridgeSmoke::RunTest(const FString& Parameters)
         {
             const auto Object = Params->AsObject();
             Object->TryGetBoolField(TEXT("echo"), State->bBrowserVerifiedResult);
-            Object->TryGetBoolField(TEXT("invalidType"), State->bInvalidTypeRejected);
+            Object->TryGetStringField(TEXT("missingTypeCode"), State->MissingTypeCode);
+            Object->TryGetStringField(TEXT("emptyTypeCode"), State->EmptyTypeCode);
+            Object->TryGetStringField(TEXT("numericTypeCode"), State->NumericTypeCode);
+            State->bReportReceived = true;
         }
         return FAuroraViewReply::Success(MakeShared<FJsonValueBoolean>(true));
     });
@@ -75,10 +86,10 @@ bool FAuroraViewBridgeSmoke::RunTest(const FString& Parameters)
         TEXT("{delete m.type;if(m.params===1)m.type='';if(m.params===2)m.type=42;")
         TEXT("p=JSON.stringify(m);}send(p);};auroraview.call('test.echo',{n:42})")
         TEXT(".then(function(v){return Promise.all([0,1,2].map(function(kind){")
-        TEXT("return auroraview.call('test.mustNotRun',kind).then(function(){return false;},")
-        TEXT("function(e){return e.code==='INVALID_REQUEST';});})).then(function(rejected){")
+        TEXT("return auroraview.call('test.mustNotRun',kind).then(function(){return 'UNEXPECTED_SUCCESS';},")
+        TEXT("function(e){return typeof e.code==='string'?e.code:'MISSING_ERROR_CODE';});})).then(function(codes){")
         TEXT("return auroraview.call('test.report',{echo:v.n===42,")
-        TEXT("invalidType:rejected.every(function(ok){return ok;})});});});});</script>");
+        TEXT("missingTypeCode:codes[0],emptyTypeCode:codes[1],numericTypeCode:codes[2]});});});});</script>");
     FString Error;
     if (!Module.Open(Id, Html, FText::FromString(TEXT("AuroraView automation")), Error))
     {

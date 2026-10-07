@@ -1,0 +1,4 @@
+Source-only toolchain inventory
+c++ (Debian 14.2.0-19) 14.2.0
+v24.19.0
+Python 3.12.14

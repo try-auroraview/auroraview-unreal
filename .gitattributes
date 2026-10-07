@@ -1,0 +1,3 @@
+# Vendored upstream assets are pinned byte-for-byte by manifest.json.
+ThirdParty/AuroraViewCore/* -text
+*.sh text eol=lf

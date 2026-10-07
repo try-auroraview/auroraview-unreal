@@ -1,0 +1,7 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "5.7",
+  "Category": "AuroraView isolated acceptance fixture",
+  "Description": "Disposable native plugin acceptance project. Contains no redistributed Unreal assets.",
+  "Plugins": [{"Name": "AuroraView", "Enabled": true}]
+}

@@ -1,0 +1,64 @@
+{
+  "status": "pass",
+  "checks": [
+    "pinned_event_bridge.js",
+    "pinned_bridge_stub.js",
+    "upstream_license_retained",
+    "editor_win64_boundary",
+    "build_dependencies_and_source_version_gate",
+    "native_lifecycle_and_navigation_source_guards",
+    "enqueue_only_native_endpoint",
+    "usable_id_invalid_type_error_source_guard",
+    "no_python_qt_foreground_hwnd_or_shell_backend"
+  ],
+  "unreal_compile": "not_run",
+  "unreal_ui": "not_run"
+}
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.002s
+
+OK
+PASS: 11 native mailbox lifecycle/concurrency cases
+✔ uses exact Core call envelope and native session token; JSON values round trip (8.047483ms)
+✔ upstream error name, code and data survive native response (1.90163ms)
+✔ rejected native queue settles the Core promise (1.434142ms)
+✔ failed native future settles the Core promise (1.22884ms)
+✔ synchronous transport failure is handled by unmodified Core (1.305032ms)
+✔ Core timeout clears pending state and ignores late response (1.993195ms)
+✔ close signal cancels pending calls; later calls fail fast (1.416376ms)
+✔ unload cancels pending calls (1.418489ms)
+✔ independent contexts do not share pending results (2.065372ms)
+✔ registered Core API methods use the same wire (1.405801ms)
+✔ stub call survives delayed Core installation (1.360414ms)
+✔ transport refuses subframes and missing native binding (1.769146ms)
+✔ Core events use trigger and unsubscribe correctly (1.080522ms)
+✔ 256 startup calls cannot consume the reserved ready handshake (7.668685ms)
+✔ failed ready acknowledgement cancels pending Core calls visibly (1.197764ms)
+✔ ready native future rejection is a fatal backend error (1.374284ms)
+✔ early invoke is rejected before Core can replay it as a host call (1.118127ms)
+✔ post-ready invoke keeps its distinct type for native rejection (1.177644ms)
+✔ early whenReady resolves to the installed Core bridge (1.206046ms)
+✔ close before Core ready rejects the adapted ready waiter (0.996848ms)
+✔ real startup order tolerates fragment calls before transport installation (1.30389ms)
+✔ synchronous MarkReady failure cancels startup replay calls (1.209391ms)
+✔ missing MarkReady prevents installation of the transport (0.864773ms)
+✔ multiple early ready waiters resolve once and survive subsequent unload (1.102814ms)
+✔ retained startup whenReady resolves immediately after Core is ready (1.044128ms)
+ℹ tests 25
+ℹ suites 0
+ℹ pass 25
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 154.914212
+{
+  "status": "blocked",
+  "unreal_compile": "not_run",
+  "unreal_ui": "not_run",
+  "intended_source_target": "UE 5.7 Win64 Editor (experimental)",
+  "blockers": [
+    "No actual Unreal Engine root was supplied or verified"
+  ]
+}

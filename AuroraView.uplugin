@@ -1,0 +1,21 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0-source-candidate",
+  "FriendlyName": "AuroraView Editor (source candidate)",
+  "Description": "Experimental native Slate host for the upstream AuroraView bridge in UE 5.7 Win64 Editor.",
+  "Category": "Editor",
+  "CanContainContent": false,
+  "IsBetaVersion": true,
+  "Installed": false,
+  "SupportedTargetPlatforms": ["Win64"],
+  "Modules": [
+    {
+      "Name": "AuroraViewEditor",
+      "Type": "Editor",
+      "LoadingPhase": "PostEngineInit",
+      "PlatformAllowList": ["Win64"],
+      "TargetAllowList": ["Editor"]
+    }
+  ]
+}

@@ -21,6 +21,9 @@ import preflight_engine
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_ENVIRONMENT = {
+    # Modern UAT checks Zen over IPv6 loopback even when the runner disables
+    # .NET IPv6 for outbound GitHub traffic. Scope this to Unreal children.
+    'DOTNET_SYSTEM_NET_DISABLEIPV6': '0',
     'UnrealBuildTool_WindowsPlatform__CompilerVersion': 'Latest',
     'UnrealBuildTool_BuildConfiguration__bAllowUBAExecutor': 'false',
     'UnrealBuildTool_BuildConfiguration__MaxParallelActions': '4',

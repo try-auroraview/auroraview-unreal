@@ -60,6 +60,24 @@ def coff_archive():
     return b'!<arch>\n' + member + object_bytes
 
 
+class BuildEnvironmentTests(unittest.TestCase):
+    def test_modern_uat_enables_ipv6_without_changing_runner_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            log_path = output / 'uat.log'
+            overrides = builder.build_environment({'version': '5.8'}, output)
+            with patch.dict(builder.os.environ, {'DOTNET_SYSTEM_NET_DISABLEIPV6': '1'}):
+                with patch.object(builder.os, 'name', 'nt'), patch.object(builder.subprocess, 'run') as run:
+                    run.return_value.returncode = 0
+                    self.assertEqual(builder.run_uat(['RunUAT.bat'], output, log_path, overrides), 0)
+                self.assertEqual(run.call_args.kwargs['env']['DOTNET_SYSTEM_NET_DISABLEIPV6'], '0')
+                self.assertEqual(builder.os.environ['DOTNET_SYSTEM_NET_DISABLEIPV6'], '1')
+
+    def test_legacy_uat_keeps_its_existing_network_environment(self):
+        self.assertNotIn('DOTNET_SYSTEM_NET_DISABLEIPV6',
+                         builder.build_environment({'version': '4.18'}, ROOT))
+
+
 class BuildPluginTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

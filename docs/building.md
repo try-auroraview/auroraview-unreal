@@ -21,7 +21,7 @@ Use a new output directory outside the checkout and engine. Plain Python works t
 
 The output contains `Package/`, `HostProject/`, `uat.log` and `build-receipt.json`. Source commit/tree/file hashes, actual compiler/SDK log evidence, engine BuildId and package hashes bind each run. Source or engine changes, UAT failures, missing products and altered input configuration fail the run. Legacy UBT's missing compiler log is explicitly recorded. Retained HostProject evidence sits outside the distributable package.
 
-Engine-specific flags handle legacy UAT/VS selection and modern compiler/executor selection. Settings affect only the child process; existing shared UBT XML files are hashed before and after, never edited.
+Engine-specific flags handle legacy UAT/VS selection and modern compiler/executor selection. Modern Unreal children explicitly enable .NET IPv6 so UAT can check Zen on IPv6 loopback even if the runner disables IPv6 for outbound traffic ([.NET environment variable documentation](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-environment-variables#dotnet_system_net_disableipv6)). Settings affect only the child process; existing shared UBT XML files are hashed before and after, never edited.
 
 ## Editor automation
 

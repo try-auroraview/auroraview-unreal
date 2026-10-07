@@ -2,6 +2,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "AuroraViewEditorModule.h"
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Misc/AutomationTest.h"
 #include "HAL/PlatformTime.h"
 #include "Modules/ModuleManager.h"
@@ -61,12 +62,12 @@ bool FAuroraViewBridgeSmoke::RunTest(const FString& Parameters)
             Object->TryGetBoolField(TEXT("echo"), State->bBrowserVerifiedResult);
             Object->TryGetBoolField(TEXT("invalidType"), State->bInvalidTypeRejected);
         }
-        return FAuroraViewReply::Success(MakeShared<FJsonValueBool>(true));
+        return FAuroraViewReply::Success(MakeShared<FJsonValueBoolean>(true));
     });
     Module.BindCall(Id, TEXT("test.mustNotRun"), [State](const TSharedPtr<FJsonValue>&)
     {
         State->bMalformedHandlerRan = true;
-        return FAuroraViewReply::Success(MakeShared<FJsonValueBool>(false));
+        return FAuroraViewReply::Success(MakeShared<FJsonValueBoolean>(false));
     });
     const FString Html = TEXT("<h1>AuroraView real Editor smoke</h1><script>")
         TEXT("addEventListener('auroraviewready',function(){var send=window.ipc.postMessage;")

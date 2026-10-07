@@ -373,8 +373,14 @@ void FAuroraViewEditorModule::StartupModule()
         {
             FString Error;
             TArray<TWeakObjectPtr<AActor>> Actors;
-            if (!AuroraViewFixture::Create(Actors, Error)) UE_LOG(LogAuroraView, Error, TEXT("%s"), *Error);
-            else UE_LOG(LogAuroraView, Display, TEXT("Native fixture contains %d actual actors"), Actors.Num());
+            if (!AuroraViewFixture::Create(Actors, Error))
+            {
+                UE_LOG(LogAuroraView, Error, TEXT("%s"), *Error);
+            }
+            else
+            {
+                UE_LOG(LogAuroraView, Display, TEXT("Native fixture contains %d actual actors"), Actors.Num());
+            }
         }), ECVF_Default);
     Impl->DockCommand = IConsoleManager::Get().RegisterConsoleCommand(
         TEXT("AuroraView.Showcase"), TEXT("Open the native docked acceptance workspace"),

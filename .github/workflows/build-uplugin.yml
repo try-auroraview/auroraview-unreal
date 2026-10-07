@@ -49,7 +49,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AuroraView-UE${{ matrix.engine }}-Win64-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ env.BUILD_OUTPUT }}
+          path: |
+            ${{ env.BUILD_OUTPUT }}/Package
+            ${{ env.BUILD_OUTPUT }}/build-receipt.json
+            ${{ env.BUILD_OUTPUT }}/uat.log
+            ${{ env.BUILD_OUTPUT }}/uat-logs
+            ${{ env.BUILD_OUTPUT }}/HostProject/Saved/Manifest*.xml
+            ${{ env.BUILD_OUTPUT }}/HostProject/Plugins/AuroraView/Binaries/Win64/*.target
           if-no-files-found: error
           retention-days: 14
       - name: Cook, package and accept the live Game Runtime
@@ -62,7 +68,28 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AuroraView-Game-UE${{ matrix.engine }}-Win64-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ env.BUILD_OUTPUT }}-Game
+          path: |
+            ${{ env.BUILD_OUTPUT }}-Game/PackagedGame
+            ${{ env.BUILD_OUTPUT }}-Game/evidence
+            ${{ env.BUILD_OUTPUT }}-Game/Project/Binaries/Win64/*.exe
+            ${{ env.BUILD_OUTPUT }}-Game/Project/Binaries/Win64/*.target
+            ${{ env.BUILD_OUTPUT }}-Game/Project/Source
+            ${{ env.BUILD_OUTPUT }}-Game/Project/Config
+            ${{ env.BUILD_OUTPUT }}-Game/Project/*.uproject
+            ${{ env.BUILD_OUTPUT }}-Game/editor-build.*
+            ${{ env.BUILD_OUTPUT }}-Game/ubt-editor.*
+            ${{ env.BUILD_OUTPUT }}-Game/uat*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Retain compact acceptance receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuroraView-evidence-UE${{ matrix.engine }}-Win64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ env.BUILD_OUTPUT }}/build-receipt.json
+            ${{ env.BUILD_OUTPUT }}-Game/evidence
           if-no-files-found: warn
           retention-days: 14
 

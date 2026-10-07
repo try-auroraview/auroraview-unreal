@@ -21,6 +21,7 @@ import threading
 import time
 
 import build_plugin
+import pe_evidence
 import preflight_engine
 
 
@@ -218,6 +219,37 @@ def validate_executable(path):
             raise build_plugin.BuildError('Game output is not a Win64 PE32+ executable')
 
 
+def staged_executable_evidence(project, executable, target, policy):
+    products = target.get('BuildProducts', [])
+    if not isinstance(products, list):
+        raise build_plugin.BuildError('Invalid Game target BuildProducts')
+    products = [product for product in products if isinstance(product, dict) and product.get('Type') == 'Executable']
+    if len(products) != 1 or not isinstance(products[0].get('Path'), str):
+        raise build_plugin.BuildError('Expected one receipt-bound compiled Game executable')
+    raw = products[0]['Path'].replace('\\', '/')
+    if raw.startswith('$(ProjectDir)/'):
+        compiled = project / raw[len('$(ProjectDir)/'):]
+    elif '$(' not in raw and Path(raw).is_absolute():
+        compiled = Path(raw)
+    else:
+        raise build_plugin.BuildError('Game executable receipt must identify a project-local file')
+    compiled = compiled.resolve()
+    if (compiled.parent != (project / 'Binaries/Win64').resolve()
+            or compiled.name not in [PROJECT + '.exe', PROJECT + '-Win64-Development.exe']
+            or not compiled.is_file()):
+        raise build_plugin.BuildError('Game executable receipt escapes the project Game output')
+    digest, compiled_digest = build_plugin.sha256(executable), build_plugin.sha256(compiled)
+    if digest == compiled_digest:
+        return dict(comparison='whole_file', compiled_path=str(compiled), staged_path=str(executable),
+                    compiled_sha256=compiled_digest, staged_sha256=digest)
+    if policy['version'] != '4.18':
+        raise build_plugin.BuildError('Staged executable differs from the actual compiled Game')
+    try:
+        return pe_evidence.compare_resource_update(compiled, executable)
+    except (OSError, ValueError, struct.error) as error:
+        raise build_plugin.BuildError('Staged executable differs from the actual compiled Game: ' + str(error)) from error
+
+
 def stage_evidence(project, archive, engine, package_receipt, policy):
     files = inventory(archive)
     if not files:
@@ -245,10 +277,8 @@ def stage_evidence(project, archive, engine, package_receipt, policy):
     target_type = target.get('TargetType')
     if target_type != 'Game' and not (target_type is None and policy['version'] == '4.18'):
         raise build_plugin.BuildError('Compiled target is not a Game target')
-    built_exes = list((project / 'Binaries/Win64').glob(PROJECT + '*.exe'))
     digest = build_plugin.sha256(executable)
-    if not any(build_plugin.sha256(path) == digest for path in built_exes):
-        raise build_plugin.BuildError('Staged executable differs from the actual compiled Game')
+    executable_identity = staged_executable_evidence(project, executable, target, policy)
     resources = {}
     for relative, expected in package_receipt['source_assets_sha256'].items():
         if not relative.startswith(('Resources/', 'ThirdParty/AuroraViewCore/')):
@@ -285,6 +315,7 @@ def stage_evidence(project, archive, engine, package_receipt, policy):
     cef.update(subprocess_matches)
     return executable, {'files_sha256': files, 'runtime_resources_sha256': resources,
                         'cef_sha256': cef, 'executable_sha256': digest,
+                        'executable_identity': executable_identity,
                         'target_receipt': str(target_path), 'target_receipt_sha256': build_plugin.sha256(target_path),
                         'target': target, 'editor_binaries': 'absent', 'runtime_linkage': 'native Game target'}
 

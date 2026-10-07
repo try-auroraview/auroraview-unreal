@@ -5,6 +5,7 @@
 #include "FileHelpers.h"
 #include "HAL/FileManager.h"
 #include "Misc/App.h"
+#include "Misc/FeedbackContext.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"

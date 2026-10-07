@@ -42,7 +42,7 @@ Future done callbacks run on the completing thread and must remain nonblocking. 
 | `unreal.object.set` | `object`, `property`, JSON `value`; typed conversion and Editor change notifications |
 | `unreal.object.call` | `object`, `function`, object `args`; JSON conversion, ProcessEvent, `return_value` and `out` |
 | `unreal.console.execute` | `world`, `command`; reports whether the engine handled it |
-| `unreal.python.execute` | `code`; available only in Editor with installed/enabled PythonScriptPlugin |
+| `unreal.python.execute` | `code`; requires `-AuroraViewAllowControl`; available only in Editor with installed/enabled PythonScriptPlugin |
 | `auroraview.host.describe` | Protocol and actual host identity/capabilities |
 | `auroraview.tools.list` | Native and currently registered project/Python tools |
 | `auroraview.view.open` | `id`, trusted local `html`, optional `title`; owns an independent native browser window |

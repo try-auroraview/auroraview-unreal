@@ -432,7 +432,8 @@ struct FAuroraViewControlHost::FImpl
             {
                 uint8 Probe = 0; int32 Read = 0;
                 const bool bReceived = Item->Socket->Recv(&Probe, 1, Read, ESocketReceiveFlags::Peek);
-                if ((bReceived && Read == 0) || (!bReceived && Sockets->GetLastErrorCode() != SE_EWOULDBLOCK)) Item->bClosed = true;
+                // Unreal maps EWOULDBLOCK to success with zero bytes; EOF is false.
+                if (!bReceived) Item->bClosed = true;
             }
             for (int32 Count = 0; !Item->bClosed && !Item->bClosing && Count < 8; ++Count)
             {

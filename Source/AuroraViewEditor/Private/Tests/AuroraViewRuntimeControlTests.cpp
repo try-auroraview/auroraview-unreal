@@ -3,6 +3,8 @@
 #include "GameFramework/GameUserSettings.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/EngineVersion.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Modules/ModuleManager.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -24,6 +26,8 @@ bool FAuroraViewRuntimeControlTest::RunTest(const FString&)
     TestTrue(TEXT("Actual native host reports engine identity"), Info.bOk && Info.Result.IsValid());
     if (!Info.bOk || !Info.Result.IsValid()) return false;
     TestTrue(TEXT("Isolated acceptance explicitly enables native control"), Info.Result->AsObject()->GetBoolField(TEXT("native_control")));
+    if (FParse::Param(FCommandLine::Get(), TEXT("AuroraViewExpectEditorPython")))
+        TestTrue(TEXT("Fixture-enabled installed Python capability is present"), Info.Result->AsObject()->GetBoolField(TEXT("editor_python")));
     auto Args = MakeShared<FJsonObject>();
     Args->SetStringField(TEXT("object"), TEXT("/Script/Engine.Default__KismetSystemLibrary"));
     Args->SetStringField(TEXT("function"), TEXT("GetEngineVersion"));

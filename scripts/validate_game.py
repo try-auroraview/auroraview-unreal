@@ -170,7 +170,7 @@ def game_command(engine, project, archive, policy):
                '-project=' + str(project), '-target=' + PROJECT, '-noP4', '-platform=Win64',
                '-clientconfig=Development', '-build', '-cook', '-stage', '-pak', '-package',
                '-archive', '-archivedirectory=' + str(archive), '-map=/Engine/Maps/Entry',
-               '-unattended', '-utf8output', '-nocompileeditor', '-skipbuildeditor']
+               '-unattended', '-utf8output']
     if policy['version'] == '4.26':
         command.append('-VS2019')
     if policy['version'].startswith('4.') and (engine / 'Engine/Binaries/DotNET/AutomationTool.exe').is_file():
@@ -337,7 +337,7 @@ def validate_browser(client, process, timeout):
 
 def run_game(executable, evidence, engine_version, timeout, rendered_browser=False):
     sys.path.insert(0, str(ROOT / 'python'))
-    from auroraview_unreal import Client
+    from auroraview_unreal import Client, ProtocolError, RemoteError
     token = secrets.token_urlsafe(32)
     with socket.socket() as reservation:
         reservation.bind(('127.0.0.1', 0))
@@ -395,6 +395,40 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
             if reverse != {'echo': 'packaged-game-round-trip'}:
                 raise build_plugin.BuildError('External Python tool reverse call did not round-trip')
             result['actions']['python_reverse_call'] = reverse
+            # A live connection must survive ticks with no incoming bytes.
+            time.sleep(0.3)
+            if client.call('python.acceptance.echo', {'value': 'idle-connection'}) != {'echo': 'idle-connection'}:
+                raise build_plugin.BuildError('Native connection did not survive an idle interval')
+            result['actions']['idle_connection'] = 'pass'
+            try:
+                with Client(port, secrets.token_urlsafe(32), expected_pid=process.pid, timeout=5):
+                    raise build_plugin.BuildError('Native host accepted a different token')
+            except ProtocolError:
+                result['actions']['wrong_token_rejected'] = True
+            with Client(port, token, expected_pid=process.pid, expected_context='game') as other:
+                try:
+                    other.bind_call('python.acceptance.echo', lambda value: value)
+                    raise build_plugin.BuildError('Another connection replaced an owned Python tool')
+                except RemoteError as error:
+                    if error.code != 'TOOL_CONFLICT':
+                        raise
+                    result['actions']['tool_ownership'] = 'pass'
+                other.bind_call('python.acceptance.ephemeral', lambda: True)
+                if client.call('python.acceptance.ephemeral') is not True:
+                    raise build_plugin.BuildError('Cross-connection native tool dispatch failed')
+            disconnect_deadline = time.monotonic() + 5
+            while True:
+                try:
+                    client.call('python.acceptance.ephemeral')
+                except RemoteError as error:
+                    if error.code == 'METHOD_NOT_FOUND':
+                        break
+                    if error.code not in ['TOOL_DISCONNECTED', 'TOOL_UNAVAILABLE']:
+                        raise
+                if time.monotonic() >= disconnect_deadline:
+                    raise build_plugin.BuildError('Disconnected Python tool was not unregistered')
+                time.sleep(0.05)
+            result['actions']['disconnect_cleanup'] = 'pass'
             received = []
             event_ready = threading.Event()
             def on_event(data):

@@ -222,7 +222,7 @@ FAuroraViewActorDragCapture FAuroraViewNativeShowcase::CaptureCompleteActorSelec
     if (!GEditor || !GEditor->GetSelectedActors()) return Capture;
     // Deliberately inspect every selection entry: no limit, filtering or accepted
     // prefix here. The admission policy rejects the entire set if any entry fails.
-    const USelection* Selection = GEditor->GetSelectedActors();
+    USelection* Selection = GEditor->GetSelectedActors();
     const int32 SelectedSlots = Selection->Num();
     for (int32 Index = 0; Index < SelectedSlots; ++Index)
     {

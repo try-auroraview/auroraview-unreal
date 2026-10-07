@@ -241,6 +241,13 @@ try {
         )
     }
     Write-JsonFile $descriptor $fixtureProject
+    $pythonPlugin = Join-Path $enginePath 'Engine/Plugins/Experimental/PythonScriptPlugin/PythonScriptPlugin.uplugin'
+    $expectPython = Test-Path -LiteralPath $pythonPlugin -PathType Leaf
+    if ($expectPython) {
+        $descriptor.Plugins += [ordered]@{ Name = 'PythonScriptPlugin'; Enabled = $true }
+        Write-JsonFile $descriptor $fixtureProject
+    }
+    $result.editor_python_fixture = if ($expectPython) { 'enabled' } else { 'unavailable' }
     $preparationLog = Join-Path $evidenceDirectory 'UnrealEditor-prepare.log'
     $preparationArguments = '"' + $fixtureProject + '" -run=AuroraViewPrepare -Map=/Game/AuroraViewAcceptance/Smoke -Unattended -NoSplash -NoSound -NoP4 -NullRHI -abslog="' + $preparationLog + '"'
     Invoke-FixtureEditor $preparationEditor $preparationArguments 'prepare'
@@ -259,6 +266,7 @@ try {
     $acceptanceLog = Join-Path $evidenceDirectory 'UnrealEditor-automation.log'
     # Keep rendering enabled: the suite exercises actual CEF and Slate widgets.
     $automationArguments = '"' + $fixtureProject + '" /Game/AuroraViewAcceptance/Smoke -AuroraViewFixtureMap=/Game/AuroraViewAcceptance/Smoke -AuroraViewAllowFixtureMutations -AuroraViewAllowControl -Unattended -NoSplash -NoSound -NoP4 -Windowed -ResX=1280 -ResY=720 -ExecCmds="Automation RunTests AuroraView." -TestExit="Automation Test Queue Empty" -ReportExportPath="' + $reportDirectory + '" -abslog="' + $acceptanceLog + '"'
+    if ($expectPython) { $automationArguments += ' -AuroraViewExpectEditorPython' }
     Assert-PackageFiles $packagePath $buildReceipt.package.files_sha256
     Assert-PackageFiles $fixturePlugin $buildReceipt.package.files_sha256
     Invoke-FixtureEditor $renderingEditor $automationArguments 'automation'

@@ -109,6 +109,8 @@ class PackagedGameGuards(unittest.TestCase):
             self.assertIn('-target=' + validator.PROJECT, command)
             self.assertIn('-clientconfig=Development', command)
             self.assertIn('-cook', command)
+            self.assertNotIn('-skipbuildeditor', command)
+            self.assertNotIn('-nocompileeditor', command)
             self.assertEqual('-VS2019' in command, policy['version'] == '4.26')
 
 

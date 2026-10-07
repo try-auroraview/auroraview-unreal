@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD_ENVIRONMENT = {
     'UnrealBuildTool_WindowsPlatform__CompilerVersion': 'Latest',
     'UnrealBuildTool_BuildConfiguration__bAllowUBAExecutor': 'false',
-    'UnrealBuildTool_BuildConfiguration__MaxParallelActions': '1',
+    'UnrealBuildTool_BuildConfiguration__MaxParallelActions': '4',
 }
 MODULE = 'AuroraViewEditor'
 RUNTIME_MODULE = 'AuroraViewRuntime'
@@ -257,7 +257,7 @@ def build_environment(policy, output):
     if not policy['version'].startswith('4.'):
         overrides.update(BUILD_ENVIRONMENT)
     if policy['version'] == '5.5':
-        overrides['UBT_EXTRA_ARGS'] = '-NoUBA -NoUBALocal -MaxParallelActions=1'
+        overrides['UBT_EXTRA_ARGS'] = '-NoUBA -NoUBALocal -MaxParallelActions=4'
     return overrides
 
 

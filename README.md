@@ -1,8 +1,13 @@
 # AuroraView Unreal Editor source candidate
 
-**Experimental source candidate; Unreal compilation and actual Editor UI: `not_run`.**
+**Experimental source candidate: UE 5.7.4 / Win64 native build and package checks passed; actual Editor UI remains `not_run`.**
 This is reviewable source, not a supported binary or a completed Unreal release.
-No precompiled Unreal binary or stable release is included.
+No precompiled Unreal binary or stable release is included. The verified build
+used [source commit 6eb8fbd](https://github.com/try-auroraview/auroraview-unreal/commit/6eb8fbd44af951a8812a6df473e83d7a2adc96c5).
+UHT, C++ compilation, DLL linking and UAT packaging completed successfully.
+Required bridge assets and license notices were hash-checked in the final package.
+Real CEF rendering/RPC, lifecycle, GC and Editor shutdown acceptance are still pending.
+See the [verification matrix](docs/acceptance.md).
 
 ## What is here
 
@@ -35,14 +40,15 @@ explicitly registered C++ host handlers; it is not a second Core implementation.
 The current **experimental source validation target is UE 5.7 / Win64 Editor**.
 `Build.cs` deliberately rejects other engine minors and platforms. The original
 reviewed source snapshot provisionally targeted 5.6; the current gate and
-preflight select 5.7 for an experimental build attempt. Native C++ and bridge
-JavaScript remain unchanged.
+preflight select 5.7 for experimental validation. The first native build exposed
+two C++ issues and a packaging omission; each was corrected in a separate commit.
+Pinned Core bridge JavaScript remains unchanged.
 This is not a source-compatibility or binary-support claim. See the
 [version validation plan](docs/version-validation.md) and
 [verified source provenance](docs/provenance.md).
 
-No real engine is installed in this cloud workspace. Build each binary
-with the actual engine's UBT/UHT, its compiler/toolchain, and its CEF binaries.
+The verified native build used the actual UE 5.7.4 Win64 installation. Build each
+binary with that engine's UBT/UHT, its compiler/toolchain, and its CEF binaries.
 Do not reuse DLLs across UE minors, BuildIds, architectures or custom engine builds.
 
 There is no packaged-game, UE4, ARM64, Linux, macOS, Python ABI, live reload or

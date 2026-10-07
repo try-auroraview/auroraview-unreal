@@ -1,7 +1,11 @@
 # Verification matrix
 
-Cloud checks rerun on 2026-10-06; native gates remain unexecuted. Never substitute the cloud
-checks below for native Editor execution.
+Source/transport checks were rerun on 2026-10-07. Actual UE 5.7.4 Win64 build
+and complete-package verification passed at
+[6eb8fbd](https://github.com/try-auroraview/auroraview-unreal/commit/6eb8fbd44af951a8812a6df473e83d7a2adc96c5).
+Editor/CEF execution remains untested. Earlier stress/sanitizer evidence is
+retained with its original scope. Never substitute source or build checks for
+native Editor execution.
 
 | Gate | Status | Evidence / required result |
 |---|---|---|
@@ -14,9 +18,10 @@ checks below for native Editor execution.
 | Mailbox ASan + UBSan | pass | `detect_leaks=0`; no sanitizer finding in these tests |
 | LeakSanitizer | blocked | Executor ptrace prevents LSAN; no leak-clean claim |
 | Actual upstream bridge + UE transport contracts | pass | 25 Node 24.19.0 VM cases, including actual startup order and ready failures |
-| Exact installed UE version/build/toolchain inventory | not_run | No verified engine root in this workspace |
-| UHT reflected endpoint generation | not_run | Must pass on actual chosen UE build |
-| UBT clean Win64 Editor plugin compile/link/package | not_run | Save complete build log, engine BuildId and compiler |
+| Exact engine/platform and build identity | pass | UE 5.7.4 Win64; engine BuildId and produced DLL hash verified |
+| UHT reflected endpoint generation | pass | Four generated files in the actual UE 5.7.4 run |
+| UBT Win64 Editor plugin compile/link/package | pass | Nine compile/link/metadata actions; UBT, UAT and wrapper exited 0 |
+| Packaged runtime assets and license notices | pass | Nine final resource hashes matched; all five runtime file-read paths covered |
 | Real Editor visible native view | not_run | Open demo; screenshot with Editor chrome and bridge ready |
 | Actual CEF → UObject → GameThread → CEF round trip | not_run | `AuroraView.Editor.BridgeRoundTrip` must pass |
 | Native invalid-type structured error path | not_run | Added to real Editor smoke; cloud only checked source guard |
@@ -41,6 +46,22 @@ checks below for native Editor execution.
 | Actual UE memory/CEF leak check | not_run | Track native resources across open/close cycles |
 | GC pressure during pending UObject calls / nonblocking close | not_run | Requires actual engine binding ownership and teardown evidence |
 | Mac/Linux/runtime-game/other engine minor | unsupported | Not in source gate or this acceptance scope |
+
+## Native build progression (2026-10-07)
+
+- Initial native build: UHT passed; UBT rejected the nonexistent FJsonValueBool
+- First correction: FJsonValueBoolean and its explicit header, confirmed against the installed engine
+- Next native build: the boolean error cleared; UBT found incomplete-FImpl cleanup from the inline implicit constructor
+- Second correction: declare the constructor publicly and default it after FImpl is complete; retain the out-of-line destructor
+- The following native compile/link/UAT run exited 0, but its package omitted required Core bridge assets and notices
+- Third correction: Config/FilterPlugin.ini explicitly includes the Core assets, root license and the filter itself
+- A fresh complete run at 6eb8fbd passed UHT/build/link/package and independent source/output/resource hash checks; its process exited normally
+
+The known WriteMetadata `Invalid args` LogWarning is retained in the evidence;
+this is not a warning-free-build claim. No existing output package was manually
+patched. No graphical Editor, actual CEF RPC, GC or native lifecycle test has
+passed yet. The source checks and Node/C++ transport fixtures do not replace
+those remaining gates.
 
 ## Execution order for the future real-engine owner
 

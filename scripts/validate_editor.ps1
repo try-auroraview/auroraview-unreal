@@ -62,14 +62,21 @@ function Get-ReportCounter {
 }
 
 function Assert-AutomationReport {
-    param([string]$Path)
+    param([string]$Path, [ValidateSet('4.18', '4.26', '5.5', '5.7', '5.8')][string]$EngineVersion)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "No Automation index.json was produced: $Path"
     }
-    # UE 5.7 AutomationController serializes FAutomatedTestPassResults and
+    # AutomationController serializes FAutomatedTestPassResults and
     # FAutomatedTestResult to this flat tests array; process exit is insufficient.
     $report = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-    foreach ($counter in @('failed', 'notRun', 'inProcess')) {
+    $counters = @('failed', 'notRun')
+    # UE4's FAutomatedTestPassResults has no InProcess property. Every test
+    # must still be Success below, so unfinished legacy tests cannot pass.
+    # Require the counter in UE5, and validate it whenever UE4 provides one.
+    if ($EngineVersion -notin @('4.18', '4.26') -or $null -ne $report.PSObject.Properties['inProcess']) {
+        $counters += 'inProcess'
+    }
+    foreach ($counter in $counters) {
         if ((Get-ReportCounter $report $counter) -ne 0) {
             throw "Automation report '$counter' is not zero"
         }
@@ -83,7 +90,8 @@ function Assert-AutomationReport {
         'AuroraView.Editor.TypedInspectorGuards',
         'AuroraView.Showcase.FixtureBridgeRoundTrip',
         'AuroraView.Showcase.FixtureTransform',
-        'AuroraView.Showcase.NativeInteractionGuards'
+        'AuroraView.Showcase.NativeInteractionGuards',
+        'AuroraView.Runtime.ControlReflection'
     )
     $testsProperty = $report.PSObject.Properties['tests']
     if ($null -eq $testsProperty -or $null -eq $testsProperty.Value) {
@@ -149,28 +157,33 @@ function Invoke-FixtureEditor {
     }
 }
 
-if ($env:OS -ne 'Windows_NT') { throw 'This validation entry point requires Windows and installed UE 5.7 Win64' }
+if ($env:OS -ne 'Windows_NT') { throw 'This validation entry point requires Windows and an installed supported Unreal Engine' }
 $enginePath = (Resolve-Path -LiteralPath $EngineRoot).Path
 $packagePath = (Resolve-Path -LiteralPath $Package).Path
 $outputPath = [IO.Path]::GetFullPath($Output).TrimEnd('\', '/')
 if (Test-Path -LiteralPath $outputPath) { throw 'Output already exists; choose a new isolated directory' }
-foreach ($protected in @($enginePath, $packagePath)) {
+foreach ($protected in @($enginePath, $packagePath, (Split-Path -Parent $PSScriptRoot))) {
     $prefix = $protected.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
-    if ($outputPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Output must be outside the engine installation and packaged plugin'
+    $outputPrefix = $outputPath + [IO.Path]::DirectorySeparatorChar
+    if ($outputPath -ieq $protected -or $outputPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $protected.StartsWith($outputPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Output must be isolated from the source, engine and packaged plugin'
     }
 }
 $versionPath = Join-Path $enginePath 'Engine/Build/Build.version'
 $version = Get-Content -LiteralPath $versionPath -Raw | ConvertFrom-Json
-if ($version.MajorVersion -ne 5 -or $version.MinorVersion -ne 7) { throw 'Installed UE 5.7 is required' }
+$engineVersion = "$($version.MajorVersion).$($version.MinorVersion)"
+if ($engineVersion -notin @('4.18', '4.26', '5.5', '5.7', '5.8')) { throw 'Engine is outside the supported validation matrix' }
+$editorTarget = if ($version.MajorVersion -eq 4) { 'UE4Editor' } else { 'UnrealEditor' }
 if (-not (Test-Path -LiteralPath (Join-Path $enginePath 'Engine/Build/InstalledBuild.txt') -PathType Leaf)) {
     throw 'EngineRoot must be an installed Unreal Engine build'
 }
-$preparationEditor = Join-Path $enginePath 'Engine/Binaries/Win64/UnrealEditor-Cmd.exe'
-$renderingEditor = Join-Path $enginePath 'Engine/Binaries/Win64/UnrealEditor.exe'
+$preparationEditor = Join-Path $enginePath "Engine/Binaries/Win64/$editorTarget-Cmd.exe"
+$renderingEditor = Join-Path $enginePath "Engine/Binaries/Win64/$editorTarget.exe"
 foreach ($required in @($preparationEditor, $renderingEditor, (Join-Path $packagePath 'AuroraView.uplugin'),
-    (Join-Path $packagePath 'Binaries/Win64/UnrealEditor-AuroraViewEditor.dll'),
-    (Join-Path $packagePath 'Binaries/Win64/UnrealEditor.modules'))) {
+    (Join-Path $packagePath "Binaries/Win64/$editorTarget-AuroraViewEditor.dll"),
+    (Join-Path $packagePath "Binaries/Win64/$editorTarget-AuroraViewRuntime.dll"),
+    (Join-Path $packagePath "Binaries/Win64/$editorTarget.modules"))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required packaged/installed file missing: $required" }
 }
 $buildReceiptPath = Join-Path (Split-Path $packagePath -Parent) 'build-receipt.json'
@@ -180,7 +193,7 @@ if ($buildReceipt.status -cne 'pass' -or $buildReceipt.unreal_compile -cne 'pass
     (Resolve-Path -LiteralPath $buildReceipt.package.root).Path.TrimEnd('\', '/') -ine $packagePath.TrimEnd('\', '/')) {
     throw 'Package requires a passing build receipt bound to this exact directory'
 }
-$engineModulesPath = Join-Path $enginePath 'Engine/Binaries/Win64/UnrealEditor.modules'
+$engineModulesPath = Join-Path $enginePath "Engine/Binaries/Win64/$editorTarget.modules"
 $engineModules = Get-Content -LiteralPath $engineModulesPath -Raw | ConvertFrom-Json
 if ([string]::IsNullOrWhiteSpace($engineModules.BuildId) -or
     $buildReceipt.engine.build_id -cne $engineModules.BuildId -or
@@ -192,9 +205,9 @@ if ($buildReceipt.source.commit -notmatch '^[a-fA-F0-9]{40,64}$' -or $buildRecei
     throw 'Build receipt has no valid source commit and tree identity'
 }
 Assert-PackageFiles $packagePath $buildReceipt.package.files_sha256
-$dllRelative = 'Binaries/Win64/UnrealEditor-AuroraViewEditor.dll'
+$dllRelative = "Binaries/Win64/$editorTarget-AuroraViewEditor.dll"
 $dllHash = (Get-FileHash -LiteralPath (Join-Path $packagePath $dllRelative) -Algorithm SHA256).Hash
-$packageModules = Get-Content -LiteralPath (Join-Path $packagePath 'Binaries/Win64/UnrealEditor.modules') -Raw | ConvertFrom-Json
+$packageModules = Get-Content -LiteralPath (Join-Path $packagePath "Binaries/Win64/$editorTarget.modules") -Raw | ConvertFrom-Json
 if ($dllHash -ine $buildReceipt.package.dll.sha256 -or $packageModules.BuildId -cne $engineModules.BuildId) {
     throw 'Package DLL hash or BuildId differs from the passing build receipt'
 }
@@ -224,20 +237,23 @@ try {
     $fixtureProject = Join-Path $outputPath 'AuroraViewNativeFixture.uproject'
     $descriptor = [ordered]@{
         FileVersion = 3
-        EngineAssociation = '5.7'
+        EngineAssociation = $engineVersion
         Category = 'Tests'
         Description = 'Disposable AuroraView native automation fixture'
         Plugins = @(
-            [ordered]@{ Name = 'AuroraView'; Enabled = $true },
-            [ordered]@{ Name = 'PythonScriptPlugin'; Enabled = $true },
-            [ordered]@{ Name = 'EditorScriptingUtilities'; Enabled = $true }
+            [ordered]@{ Name = 'AuroraView'; Enabled = $true }
         )
     }
     Write-JsonFile $descriptor $fixtureProject
-    $preparationScript = Join-Path $evidenceDirectory 'prepare_fixture.py'
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'prepare_fixture.py') -Destination $preparationScript
+    $pythonPlugin = Join-Path $enginePath 'Engine/Plugins/Experimental/PythonScriptPlugin/PythonScriptPlugin.uplugin'
+    $expectPython = Test-Path -LiteralPath $pythonPlugin -PathType Leaf
+    if ($expectPython) {
+        $descriptor.Plugins += [ordered]@{ Name = 'PythonScriptPlugin'; Enabled = $true }
+        Write-JsonFile $descriptor $fixtureProject
+    }
+    $result.editor_python_fixture = if ($expectPython) { 'enabled' } else { 'unavailable' }
     $preparationLog = Join-Path $evidenceDirectory 'UnrealEditor-prepare.log'
-    $preparationArguments = '"' + $fixtureProject + '" -Unattended -NoSplash -NoSound -NoP4 -NullRHI -ScriptErrorsAreFatal -ExecutePythonScript="' + $preparationScript.Replace('\', '/') + '" -abslog="' + $preparationLog + '"'
+    $preparationArguments = '"' + $fixtureProject + '" -run=AuroraViewPrepare -Map=/Game/AuroraViewAcceptance/Smoke -Unattended -NoSplash -NoSound -NoP4 -NullRHI -abslog="' + $preparationLog + '"'
     Invoke-FixtureEditor $preparationEditor $preparationArguments 'prepare'
     $mapFile = Join-Path $outputPath 'Content/AuroraViewAcceptance/Smoke.umap'
     $fixtureReceipt = Join-Path $evidenceDirectory 'fixture.json'
@@ -249,19 +265,19 @@ try {
         [IO.Path]::GetFullPath($prepared.project) -ine $outputPath) {
         throw 'Preparation receipt does not identify this isolated fixture'
     }
-    # Python and EditorScriptingUtilities are preparation dependencies only.
-    $descriptor.Plugins[1].Enabled = $false
-    $descriptor.Plugins[2].Enabled = $false
-    Write-JsonFile $descriptor $fixtureProject
 
     $reportDirectory = Join-Path $evidenceDirectory 'automation'
     $acceptanceLog = Join-Path $evidenceDirectory 'UnrealEditor-automation.log'
     # Keep rendering enabled: the suite exercises actual CEF and Slate widgets.
-    $automationArguments = '"' + $fixtureProject + '" /Game/AuroraViewAcceptance/Smoke -AuroraViewFixtureMap=/Game/AuroraViewAcceptance/Smoke -AuroraViewAllowFixtureMutations -Unattended -NoSplash -NoSound -NoP4 -Windowed -ResX=1280 -ResY=720 -ExecCmds="Automation RunTests AuroraView." -TestExit="Automation Test Queue Empty" -ReportExportPath="' + $reportDirectory + '" -abslog="' + $acceptanceLog + '"'
+    $reportOption = 'ReportExportPath'
+    if ($engineVersion -eq '4.18') { $reportOption = 'ReportOutputPath' }
+    $automationArguments = '"' + $fixtureProject + '" /Game/AuroraViewAcceptance/Smoke -AuroraViewFixtureMap=/Game/AuroraViewAcceptance/Smoke -AuroraViewAllowFixtureMutations -AuroraViewAllowControl -Unattended -NoSplash -NoSound -NoP4 -Windowed -ResX=1280 -ResY=720 -ExecCmds="Automation RunTests AuroraView." -TestExit="Automation Test Queue Empty" -' + $reportOption + '="' + $reportDirectory + '" -abslog="' + $acceptanceLog + '"'
+    if (-not $engineVersion.StartsWith('4.')) { $automationArguments += ' -LiveCoding=False' }
+    if ($expectPython) { $automationArguments += ' -AuroraViewExpectEditorPython' }
     Assert-PackageFiles $packagePath $buildReceipt.package.files_sha256
     Assert-PackageFiles $fixturePlugin $buildReceipt.package.files_sha256
     Invoke-FixtureEditor $renderingEditor $automationArguments 'automation'
-    $result.tests = @(Assert-AutomationReport (Join-Path $reportDirectory 'index.json'))
+    $result.tests = @(Assert-AutomationReport -Path (Join-Path $reportDirectory 'index.json') -EngineVersion $engineVersion)
     if ((Get-FileHash -LiteralPath $buildReceiptPath -Algorithm SHA256).Hash -ine $buildReceiptHash -or
         (Get-FileHash -LiteralPath (Join-Path $packagePath $dllRelative) -Algorithm SHA256).Hash -ine $dllHash -or
         (Get-FileHash -LiteralPath (Join-Path $fixturePlugin $dllRelative) -Algorithm SHA256).Hash -ine $dllHash) {

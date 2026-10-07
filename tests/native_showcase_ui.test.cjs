@@ -6,7 +6,7 @@ const script=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]).jo
 function state(overrides={}){return {generation:'1',scope:'scope1',sequence:'1',hostSeconds:12.5,engineVersion:'test-fixture',canRestore:false,selectedActorIds:['opaque-a'],actors:[{id:'opaque-a',label:'<img src=x onerror=bad()>',class:'Actor',selected:true,editable:true,transform:{location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]}}],assets:[],...overrides};}
 function setup(){
  const elements=new Map(),events={},subscriptions={},calls=[];
- class Element{constructor(){this.children=[];this.value='';this.disabled=false;}set id(v){this._id=v;elements.set(v,this);}get id(){return this._id;}append(...items){this.children.push(...items);}replaceChildren(...items){this.children=items;}setAttribute(){}set innerHTML(v){throw Error('Unsafe raw HTML write: '+v);}}
+ class Element{constructor(){this.children=[];this.value='';this.disabled=false;}set id(v){this._id=v;elements.set(v,this);}get id(){return this._id;}get firstChild(){return this.children[0]||null;}append(...items){this.children.push(...items);}removeChild(item){this.children.splice(this.children.indexOf(item),1);}setAttribute(){}set innerHTML(v){throw Error('Unsafe raw HTML write: '+v);}}
  const document={createElement:()=>new Element(),getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);}};
  let reply=state();
  const context=vm.createContext({document,addEventListener:(n,f)=>events[n]=f,auroraview:{on:(n,f)=>subscriptions[n]=f,call:async(method,params)=>{calls.push({method,params});return typeof reply==='function'?reply(method,params):reply;}},console});

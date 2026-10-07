@@ -1,21 +1,38 @@
 {
   "FileVersion": 3,
-  "Version": 1,
-  "VersionName": "0.1.0-source-candidate",
-  "FriendlyName": "AuroraView Editor (source candidate)",
-  "Description": "Experimental native Slate host for the upstream AuroraView bridge in UE 5.7 Win64 Editor.",
-  "Category": "Editor",
+  "Version": 2,
+  "VersionName": "0.2.0-source-candidate",
+  "FriendlyName": "AuroraView Unreal",
+  "Description": "AuroraView bridge, Python tools and native automation for Unreal Editor and packaged games.",
+  "Category": "User Interface",
   "CanContainContent": false,
   "IsBetaVersion": true,
   "Installed": false,
-  "SupportedTargetPlatforms": ["Win64"],
+  "SupportedTargetPlatforms": [
+    "Win64"
+  ],
   "Modules": [
+    {
+      "Name": "AuroraViewRuntime",
+      "Type": "Runtime",
+      "LoadingPhase": "Default",
+      "PlatformAllowList": [
+        "Win64"
+      ],
+      "WhitelistPlatforms": [
+        "Win64"
+      ]
+    },
     {
       "Name": "AuroraViewEditor",
       "Type": "Editor",
-      "LoadingPhase": "PostEngineInit",
-      "PlatformAllowList": ["Win64"],
-      "TargetAllowList": ["Editor"]
+      "LoadingPhase": "Default",
+      "PlatformAllowList": [
+        "Win64"
+      ],
+      "WhitelistPlatforms": [
+        "Win64"
+      ]
     }
   ]
 }

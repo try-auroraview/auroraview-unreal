@@ -31,7 +31,7 @@
         }
         function reject(error) {
           if (message.id && window.auroraview && window.auroraview.trigger) {
-            window.auroraview.trigger('__auroraview_call_result', {
+            window.auroraview.trigger(message.type === 'invoke' ? '__invoke_result__' : '__auroraview_call_result', {
               id: message.id, ok: false,
               error: { name: 'TransportError', message: String(error), code: 'TRANSPORT_REJECTED' }
             });

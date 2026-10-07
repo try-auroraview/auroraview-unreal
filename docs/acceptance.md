@@ -1,4 +1,7 @@
-# Verification matrix
+# Acceptance evidence
+
+The versioned Runtime candidate uses the independent build, Editor, cooked Game and optional rendered Game gates documented in [building](building.md) and [version policy](version-validation.md). Exact passing receipts identify the source/engine accepted. The records below retain earlier Editor-stage history; they do not certify a later Runtime refactor.
+
 
 ## Historical public baseline
 

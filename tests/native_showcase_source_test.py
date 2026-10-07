@@ -9,7 +9,7 @@ class NativeSourceTests(unittest.TestCase):
         for name,entry in manifest['files'].items():
             self.assertEqual(hashlib.sha256((ROOT/'ThirdParty/AuroraViewCore'/name).read_bytes()).hexdigest(),entry['sha256'])
     def test_real_native_dock_owns_browser(self):
-        src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewEditorModule.cpp').read_text()
+        src=(ROOT/'Source/AuroraViewRuntime/Private/AuroraViewRuntimeModule.cpp').read_text()
         for marker in ('RegisterNomadTabSpawner','SNew(SDockTab)','DockTab->SetContent','TryInvokeTab','UnregisterNomadTabSpawner'):
             self.assertIn(marker,src)
         self.assertNotIn('SetParentDockTab',src)
@@ -35,10 +35,10 @@ class NativeSourceTests(unittest.TestCase):
         config=(ROOT/'Config/FilterPlugin.ini').read_text()
         self.assertIn('/ThirdParty/AuroraViewCore/...',config)
         self.assertIn('/LICENSE',config)
-        build=(ROOT/'Source/AuroraViewEditor/AuroraViewEditor.Build.cs').read_text()
+        build=(ROOT/'Source/AuroraViewRuntime/AuroraViewRuntime.Build.cs').read_text()
         self.assertIn('Resources/native_showcase.html',build)
     def test_callback_boundaries_copy_and_revalidate_owners(self):
-        src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewEditorModule.cpp').read_text()
+        src=(ROOT/'Source/AuroraViewRuntime/Private/AuroraViewRuntimeModule.cpp').read_text()
         for marker in ('const TSharedPtr<FSession> Session = Entry ? *Entry', 'const auto Factory = Session->ContentFactory', 'Impl->IsCurrent(Id, Session)', 'Session->Browser == Browser', 'Session->TabEpoch == PresentationEpoch', 'const uint64 Request = ++Session->DockRequest', 'Sessions.GenerateValueArray(Snapshot)', 'NextPresentationGeneration'):
             self.assertIn(marker,src)
         stop=src[src.index('    void Stop()'):src.index('FAuroraViewReply FAuroraViewReply::Success')]
@@ -46,9 +46,11 @@ class NativeSourceTests(unittest.TestCase):
         native=(ROOT/'Source/AuroraViewEditor/Private/Tests/AuroraViewDockReentrancyTests.cpp').read_text()
         for marker in ('I < 1024','Module.Close(CloseId)','Module.Remove(ReplaceId)','Module.Close(ReopenId)','Interrupted factories leave no orphan live tabs'):
             self.assertIn(marker,native)
+        self.assertIn('State->RetiredDirectTab.IsValid() && !State->RetiredDirectTab->GetParent().IsValid()',native)
+        self.assertIn('DirectTab.IsValid() && DirectTab == State->RetiredDirectTab',native)
     def test_error_tab_close_callback_precedes_browser_open(self):
-        src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewEditorModule.cpp').read_text()
-        spawn=src[src.index('FOnSpawnTab::CreateLambda'):src.index('bool FAuroraViewEditorModule::OpenDocked')]
+        src=(ROOT/'Source/AuroraViewRuntime/Private/AuroraViewRuntimeModule.cpp').read_text()
+        spawn=src[src.index('FOnSpawnTab::CreateLambda'):src.index('bool FAuroraViewRuntimeModule::OpenDocked')]
         self.assertLess(spawn.index('Session->OwnDockTab(Tab)'),spawn.index('OpenPresentation'))
         self.assertIn('Current->TabEpoch == OwnedEpoch',src)
         native=(ROOT/'Source/AuroraViewEditor/Private/Tests/AuroraViewDockRecoveryTests.cpp').read_text()
@@ -88,4 +90,12 @@ class NativeSourceTests(unittest.TestCase):
         native=(ROOT/'Source/AuroraViewEditor/Private/Tests/AuroraViewNativeInteractionTests.cpp').read_text()
         for marker in ('RetainedClosed', 'RetainedRemoved', 'SetActorDragFeedbackForTesting', 'GetOutlinerBuildCountForTesting', 'GetChildAt(0) == SNullWidget::NullWidget'):
             self.assertIn(marker,native)
+    def test_native_map_preparation_has_isolation_and_disk_save_guards(self):
+        src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewPrepareCommandlet.cpp').read_text()
+        for marker in ('AuroraViewNativeFixture', '/Game/AuroraViewAcceptance/', 'IsValidLongPackageName',
+                       'FileExists(*Filename)', 'Refusing to overwrite', 'UEditorLoadingAndSavingUtils::SaveMap',
+                       'FileSize(*Filename) <= 0', 'fixture.json'):
+            self.assertIn(marker,src)
+        self.assertLess(src.index('FileExists(*Filename)'),src.index('GEditor->NewMap()'))
+        self.assertLess(src.index('FileSize(*Filename) <= 0'),src.index('Receipt->SetBoolField(TEXT("saved"), true)'))
 if __name__=='__main__':unittest.main()

@@ -1,44 +1,19 @@
-# Experimental UE version selection
+# Unreal version policy
 
-**UE 5.7 Win64 Editor is the experimental validation target.** Native builds
-now use the shared [local/CI build entry point](building.md), which retains
-UHT/UBT diagnostics, verifies the complete package and records its source and
-engine identity. Consult the receipt for the exact validated commit. Editor
-automation and manual acceptance remain separate gates.
+The explicit Win64 source/build matrix matches dcc-mcp-unreal: **4.18, 4.26, 5.5, 5.7 and 5.8**. Runtime and Editor modules are separate. Other versions/platforms remain outside this matrix until their own compilation and acceptance are added.
 
-The version gate selects a single intended source-validation target. Exact
-source overloads, UHT generation and UBT rules still require a real build of
-this candidate against the selected UE 5.7 installation.
+| Candidate | Local installed patch | Editor target | Embedded Editor Python | Browser bridge |
+| --- | --- | --- | --- | --- |
+| 4.18 | 4.18.3 | UE4Editor | Unavailable; external Python tools | Chrome 59 legacy bundle |
+| 4.26 | 4.26.2 | UE4Editor | Optional PythonScriptPlugin | Chrome 59 legacy bundle |
+| 5.5 | 5.5.4 | UnrealEditor | Optional PythonScriptPlugin | Original pinned Core |
+| 5.7 | 5.7.4 | UnrealEditor | Optional PythonScriptPlugin | Original pinned Core |
+| 5.8 | 5.8.1 | UnrealEditor | Optional PythonScriptPlugin | Original pinned Core |
 
-## Exact source boundary
+These are current inventory facts, not acceptance results for a future commit. Inspect each build receipt and Automation/Game report for the exact source/engine tested. Never reuse DLLs across minors or BuildIds, even when C++ signatures or CEF versions match.
 
-The candidate uses `SWebBrowser` with an existing `IWebBrowserWindow`,
-`BindUObject`, `UnbindUObject`, `LoadString`, `ExecuteJavascript`, `GetUrl`,
-`IsLoaded`, `StopLoad`, `SetParentWindow`, `CreateBrowserWindow`,
-`CloseBrowser(true, false)`, browser navigation/load delegates, `FTSTicker`,
-`OnEnginePreExit` and `TStrongObjectPtr`.
+The compatibility adapter covers ticker/pre-exit, tab invocation/ownership, browser close/parent window, AssetData, Outliner and old UProperty versus FProperty reflection. UE4 has no sidebar extension. Native map preparation avoids relying on Editor Python. UE4's generated legacy bridge preserves pinned source hashes and records reproducible tool/input/output provenance.
 
-It does not use `SetParentDockTab`. The engine's supported browser owns rendering
-and IPC; no external CEF binary is bundled.
+Each supported version requires source contracts, actual UHT/UBT Editor and Development/Shipping Game products, real graphical Editor acceptance, and actual cooked Game control/Python/event acceptance. Rendered packaged Game CEF and manual native interactions are separate acceptance gates. A successful BuildPlugin run does not establish them.
 
-## Target policy
-
-The source gate and preflight deliberately select UE 5.7. Use a
-compiler and SDK supported by that exact engine installation, following Epic's
-official setup guidance. All other engine minors and non-Win64/non-Editor
-targets remain unverified and blocked. A future version requires its own
-compile, browser and lifecycle validation; no compatibility is inferred from
-shared API names or a shared CEF version.
-
-## Verification gates
-
-1. Verify the normal repository source commit/tree on the selected executor
-2. Read actual `Build.version`, relevant public headers, compiler and SDK again
-3. Use normal `RunUAT BuildPlugin` with isolated output; retain UHT/UBT diagnostics
-4. Coordinate graphical Editor access and run the full acceptance matrix
-5. Keep publication experimental until each claimed platform/version is verified
-
-The existing [official source references](architecture.md#official-unreal-sources-checked-2026-10-05)
-describe API design. Some Epic web pages return a different documentation
-version or cannot be fetched. The selected installation's headers and actual
-build are authoritative; web documentation is not compiler evidence.
+See [commands and CI](building.md), [architecture](architecture.md) and historical [acceptance evidence](acceptance.md). The exact installed engine's headers and actual build are authoritative for native APIs; online documentation alone is not compiler evidence.

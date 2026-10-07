@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "generator": {
+    "name": "esbuild",
+    "version": "0.27.2",
+    "target": "chrome59",
+    "options": [
+      "--target=chrome59",
+      "--format=iife",
+      "--charset=utf8",
+      "--legal-comments=inline"
+    ]
+  },
+  "upstream": {
+    "repository": "https://github.com/try-auroraview/auroraview",
+    "commit": "11b3a29ad95a46cb22aaa604614de16da16bfc22",
+    "manifest_sha256": "7420292abcf87e343de1a1f184853d7451e2c19224feaef1f09064f8cb87705a"
+  },
+  "files": {
+    "event_bridge.js": {
+      "source": "ThirdParty/AuroraViewCore/event_bridge.js",
+      "source_sha256": "4550b027e400c6500fca5e64dd8c50348bde15848c513d2738dd6e443b4a17ff",
+      "sha256": "2277601a7f60db176339f61afdd59113476df5bcad7cd7b295e8e387f09430b5"
+    },
+    "bridge_stub.js": {
+      "source": "ThirdParty/AuroraViewCore/bridge_stub.js",
+      "source_sha256": "0bb295640f39a6c831583d74602876a35eafa82e342ada5c18325d021dcc15cb",
+      "sha256": "ec8d5a7c8b3a289a10e6bf859beea7e0190670844e74c937668b7d1f8776bc86"
+    }
+  }
+}

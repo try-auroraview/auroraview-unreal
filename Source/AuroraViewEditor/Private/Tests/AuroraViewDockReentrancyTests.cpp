@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "AuroraViewEditorModule.h"
+#include "AuroraViewCompatibility.h"
 #include "Framework/Docking/TabManager.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
@@ -13,7 +14,7 @@ const FName GrowId(TEXT("DockFactoryGrowth")), CloseId(TEXT("DockFactoryClose"))
 const FName ReplaceId(TEXT("DockFactoryReplace")), ReopenId(TEXT("DockFactoryReopen"));
 const FName IndependentId(TEXT("DockFactoryIndependent"));
 const FName DirectId(TEXT("DockFactoryDirectRemove")), DirectDockId(TEXT("AuroraView.View.DockFactoryDirectRemove"));
-const FString Html(TEXT("<h1>Native callback-boundary regression</h1>"));
+const FString ReentrancyHtml(TEXT("<h1>Native callback-boundary regression</h1>"));
 struct FReentrantState
 {
     double Deadline = 0;
@@ -31,8 +32,8 @@ public:
         bool bRetiredTabsGone = true;
         for (const FName Id : { CloseId, ReplaceId, ReopenId, DirectId })
             bRetiredTabsGone &= !FGlobalTabmanager::Get()->FindExistingLiveTab(FName(*(TEXT("AuroraView.View.") + Id.ToString()))).IsValid();
-        const bool bDirectRetired = !FGlobalTabmanager::Get()->HasTabSpawner(DirectDockId)
-            && State->RetiredDirectTab && !State->RetiredDirectTab->GetParentDockTabStack();
+        const bool bDirectRetired = !AuroraViewCompatibility::HasTabSpawner(FGlobalTabmanager::Get(), DirectDockId)
+            && State->RetiredDirectTab.IsValid() && !State->RetiredDirectTab->GetParent().IsValid();
         const bool bReady = Module.IsReady(GrowId) && Module.IsReady(IndependentId)
             && Module.IsReady(ReplaceId) && Module.IsReady(ReopenId);
         if ((!bReady || !bRetiredTabsGone || !bDirectRetired) && FPlatformTime::Seconds() < State->Deadline) return false;
@@ -58,9 +59,9 @@ bool FAuroraViewDockReentrancy::RunTest(const FString&)
     for (const FName Id : { GrowId, CloseId, ReplaceId, ReopenId, IndependentId, DirectId }) Module.Remove(Id);
     const auto State = MakeShared<FReentrantState>(); State->Deadline = FPlatformTime::Seconds() + 35;
     FString Error;
-    TestTrue(TEXT("Independent browser opens"), Module.Open(IndependentId, Html, FText::FromName(IndependentId), Error));
+    TestTrue(TEXT("Independent browser opens"), Module.Open(IndependentId, ReentrancyHtml, FText::FromName(IndependentId), Error));
     State->IndependentGeneration = Module.GetGeneration(IndependentId);
-    Module.RegisterDocked(GrowId, Html, FText::FromName(GrowId), Error,
+    Module.RegisterDocked(GrowId, ReentrancyHtml, FText::FromName(GrowId), Error,
         [&Module](const TSharedRef<SDockTab>&, const TSharedRef<SWidget>& Browser)
         {
             for (int32 I = 0; I < 1024; ++I)
@@ -69,43 +70,43 @@ bool FAuroraViewDockReentrancy::RunTest(const FString&)
             return Browser;
         });
     TestTrue(TEXT("Factory map growth preserves the copied session owner"), Module.OpenDocked(GrowId, Error));
-    Module.RegisterDocked(CloseId, Html, FText::FromName(CloseId), Error,
+    Module.RegisterDocked(CloseId, ReentrancyHtml, FText::FromName(CloseId), Error,
         [&Module](const TSharedRef<SDockTab>&, const TSharedRef<SWidget>& Browser)
         { Module.Close(CloseId); return Browser; });
     TestFalse(TEXT("Self-close interrupts outer open"), Module.OpenDocked(CloseId, Error));
-    Module.RegisterDocked(ReplaceId, Html, FText::FromName(ReplaceId), Error,
+    Module.RegisterDocked(ReplaceId, ReentrancyHtml, FText::FromName(ReplaceId), Error,
         [this, &Module](const TSharedRef<SDockTab>&, const TSharedRef<SWidget>& Browser)
         {
             Module.Remove(ReplaceId); FString ReplacementError;
             TestTrue(TEXT("Removed factory keeps its spawner until Slate finishes adoption"),
-                FGlobalTabmanager::Get()->HasTabSpawner(FName(TEXT("AuroraView.View.DockFactoryReplace"))));
-            TestTrue(TEXT("Removed ID can open an independent replacement"), Module.Open(ReplaceId, Html, FText::FromName(ReplaceId), ReplacementError));
+                AuroraViewCompatibility::HasTabSpawner(FGlobalTabmanager::Get(), FName(TEXT("AuroraView.View.DockFactoryReplace"))));
+            TestTrue(TEXT("Removed ID can open an independent replacement"), Module.Open(ReplaceId, ReentrancyHtml, FText::FromName(ReplaceId), ReplacementError));
             return Browser;
         });
     TestFalse(TEXT("Removed/replaced session cannot satisfy outer open"), Module.OpenDocked(ReplaceId, Error));
     TestFalse(TEXT("Removed spawner retires synchronously after Slate invocation"),
-        FGlobalTabmanager::Get()->HasTabSpawner(FName(TEXT("AuroraView.View.DockFactoryReplace"))));
-    Module.RegisterDocked(ReopenId, Html, FText::FromName(ReopenId), Error,
+        AuroraViewCompatibility::HasTabSpawner(FGlobalTabmanager::Get(), FName(TEXT("AuroraView.View.DockFactoryReplace"))));
+    Module.RegisterDocked(ReopenId, ReentrancyHtml, FText::FromName(ReopenId), Error,
         [this, &Module](const TSharedRef<SDockTab>&, const TSharedRef<SWidget>& Browser)
         {
             Module.Close(ReopenId); FString ReopenError;
-            TestTrue(TEXT("Same session can open a new generation"), Module.Open(ReopenId, Html, FText::FromName(ReopenId), ReopenError));
+            TestTrue(TEXT("Same session can open a new generation"), Module.Open(ReopenId, ReentrancyHtml, FText::FromName(ReopenId), ReopenError));
             return Browser;
         });
     TestFalse(TEXT("New generation cannot satisfy interrupted outer open"), Module.OpenDocked(ReopenId, Error));
-    Module.RegisterDocked(DirectId, Html, FText::FromName(DirectId), Error,
+    Module.RegisterDocked(DirectId, ReentrancyHtml, FText::FromName(DirectId), Error,
         [this, &Module, State](const TSharedRef<SDockTab>& Tab, const TSharedRef<SWidget>& Browser)
         {
             State->RetiredDirectTab = Tab;
             State->bDirectFactoryRemoved = Module.Remove(DirectId);
             TestTrue(TEXT("Direct factory removal preserves the spawner for Slate adoption"),
-                FGlobalTabmanager::Get()->HasTabSpawner(DirectDockId));
+                AuroraViewCompatibility::HasTabSpawner(FGlobalTabmanager::Get(), DirectDockId));
             return Browser;
         });
     // Exercise layout/menu callers that bypass Module.OpenDocked entirely.
-    const auto DirectTab = FGlobalTabmanager::Get()->TryInvokeTab(DirectDockId);
+    const auto DirectTab = AuroraViewCompatibility::TryInvokeTab(FGlobalTabmanager::Get(), DirectDockId);
     TestTrue(TEXT("Direct Slate invocation safely returns its retired factory tab"),
-        DirectTab && DirectTab == State->RetiredDirectTab);
+        DirectTab.IsValid() && DirectTab == State->RetiredDirectTab);
     TestFalse(TEXT("Direct factory removal retires session readiness immediately"), Module.IsReady(DirectId));
     ADD_LATENT_AUTOMATION_COMMAND(FWaitForReentrantDock(this, State));
     return true;

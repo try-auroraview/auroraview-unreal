@@ -1,97 +1,166 @@
-# Native architecture and ownership
+# Runtime host and shared contracts
 
-## Minimal path
+AuroraView Unreal uses the same AuroraView JavaScript call, result and event
+contracts in Editor views and packaged games. Unreal owns rendering, native
+objects and its GameThread. An external Python process can provide tools without
+loading a Python interpreter into the game.
 
-`upstream bridge stub → UE startup compatibility shim → trusted fragment → UE transport → Core event_bridge.js`
+Module boundaries describe the implementation; they do not certify every
+engine version. See [build validation](building.md) and
+[version evidence](version-validation.md) for the separate build and execution
+gates. The [upstream integration plan](upstream-integration.md) records what is
+shared today and what still needs extraction.
 
-`window.auroraview.call → window.ipc.postMessage → bound UObject PostMessage`
+## Dependency direction
 
-`bounded per-view mailbox → GameThread ticker → explicit C++ handler`
+```text
+AuroraView Core JavaScript assets and wire contracts
+                       |
+              AuroraViewRuntime
+              /               \
+     AuroraViewEditor     Project Runtime tools
+              \               /
+                Unreal host
+                       |
+          external Python tool providers
+```
 
-`JSON reply → ExecuteJavascript → auroraview.trigger('__auroraview_call_result', reply)`
+| Boundary | Owns | Does not require |
+|---|---|---|
+| `Source/AuroraViewRuntime` | CEF/Slate presentations, per-view sessions, the Core bridge endpoint, shared tool routing, native reflection and loopback transport | `UnrealEd`, an embedded Python interpreter, or the Editor module |
+| `Source/AuroraViewEditor` | Editor startup/menu policy, workspace layout, selection and asset/actor tools, fixture preparation and Editor automation | Ownership of a second browser engine or transport |
+| `python/auroraview_unreal` | External connection lifecycle, Core calls/results, Python tool registration and bounded callback workers | Unreal's Python module, Qt or a native Python extension |
+| Project tools | Project-specific actions, validation and completion semantics | Changes to AuroraView's core protocol |
 
-The last event and envelope are unchanged from Core. Requests are `{type:'call',
-id,method,params}`. Results are `{id,ok:true,result}` or
-`{id,ok:false,error:{name,message,code}}`. No JSON-RPC 2.0 claim is made: this
-is AuroraView's existing wire protocol. The endpoint's asynchronous CEF return
-only acknowledges queue admission; it is not the RPC result.
+The Editor facade delegates presentation operations to Runtime, preserving
+existing C++ callers. Generic Slate presentation code stays in Runtime; Editor
+workspace and selection policy stays in Editor. A packaged Game target depends
+on `AuroraViewRuntime` and excludes `AuroraViewEditor`.
 
-Core's `__auroraview_ready` event is translated by the UE transport to a
-token-checked `MarkReady` endpoint with a separate reserved lifecycle slot.
-Loaded, load-error and ready controls are coalesced independently from the
-256-entry RPC queue. A rejected ready acknowledgement reports a fatal backend
-error through Core instead of silently losing the signal.
+## Core bridge in a native view
 
-## Ownership
+The initialization path is:
 
-- Module owns the view registry, console command and removable GameThread ticker
-- View owns SWindow, SWebBrowser, IWebBrowserWindow, strong UObject reference and
-  independent mailbox; browser delegates capture only mailbox/generation
-- Endpoint has an immutable mailbox reference, generation and per-document token
-- Close invalidates queue admission, clears queued work, unbinds the UObject,
-  removes Slate content, closes CEF nonblocking, and releases native references
-- Reopen keeps the logical ID and handler registry, but gets a fresh native
-  browser, endpoint, token and monotonically new generation
-- Dequeued work is rechecked against its generation before execution; a handler
-  that closes/reopens the view cannot deliver its old result to the replacement
-- Pre-exit uses `OnEnginePreExit` while engine/Slate services still exist;
-  module shutdown also removes delegate registrations idempotently
-- No `AsyncTask` closure is left in the task graph after module shutdown
-- Dynamic reload is disabled because a live UCLASS/CEF DLL unload is not proven
+```text
+pinned bridge stub -> Unreal compatibility bootstrap -> trusted HTML fragment
+-> bound UObject transport -> pinned Core event bridge
+```
 
-## Security and scope
+The existing Core request envelopes are preserved:
 
-Input HTML is trusted plugin-owned content, not arbitrary pages. Each initial
-document has a unique subdomain under `.auroraview.invalid`, separate from the
-endpoint token. This does not prove CEF browser-context/storage isolation. Navigation
-accepts only one load of the exact document URL, forbids frames and redirects,
-and suppresses popups. An early CSP blocks networking, external scripts, objects,
-forms and frames. These are defense-in-depth boundaries, not a claim to sandbox
-hostile same-document JavaScript. The exposed native methods only enqueue
-bounded JSON; host APIs must be registered explicitly. No Python execution,
-shell command, filesystem or arbitrary UObject introspection endpoint is exposed.
+```json
+{"type":"call","id":"request-id","method":"project.echo","params":{"value":1}}
+{"type":"invoke","id":"request-id","cmd":"project.echo","args":{"value":1}}
+{"type":"event","event":"project:changed","detail":{"value":1}}
+```
 
-## Core reuse boundary
+Results retain `{id,ok,result}` or `{id,ok:false,error:{name,message,code}}`.
+Calls return through `auroraview.trigger('__auroraview_call_result', result)`;
+plugin-style invokes use Core's `__invoke_result__` event. Event delivery uses
+`auroraview.trigger()` throughout. This is AuroraView's existing protocol, with
+its existing promises and request IDs.
 
-The source audit found no stable C ABI to reuse for the Rust backend in this
-minimum target. Adding a competing window engine would duplicate Core and force
-an unverified ABI into the Editor. We instead reuse its JS bridge exactly and
-adapt the engine-supported rendering and thread-dispatch surfaces. The adapter
-does not carry Python lifecycle code or modify the public Core checkout.
+`BindUObject` queue admission is asynchronous. Its boolean acknowledgement
+means that a request entered the mailbox; the result arrives separately after
+the handler runs. Core's ready event has a separate, token-checked lifecycle
+slot so a full RPC queue cannot silently discard initialization.
 
-Pinned sources:
+Per-view handlers registered through `BindCall` take precedence for that view.
+Other calls reach the shared native/Python tool router. Unknown methods return
+a structured error rather than reporting success.
 
-- [Core repository at audited commit](https://github.com/try-auroraview/auroraview/tree/11b3a29ad95a46cb22aaa604614de16da16bfc22)
-- [Core event bridge source](https://github.com/try-auroraview/auroraview/blob/11b3a29ad95a46cb22aaa604614de16da16bfc22/packages/auroraview-sdk/src/inject/event_bridge.ts)
-- [Existing host reply envelope](https://github.com/try-auroraview/auroraview/blob/11b3a29ad95a46cb22aaa604614de16da16bfc22/python/auroraview/core/mixins/api.py)
-- [MIT license](https://github.com/try-auroraview/auroraview/blob/11b3a29ad95a46cb22aaa604614de16da16bfc22/LICENSE)
+## External Python transport
 
-## Official Unreal sources checked 2026-10-05
+The native host reuses upstream **parent IPC v1**: a loopback TCP server,
+UTF-8 newline-delimited JSON, and `hello` / `hello_ack` / `event` / `ping` /
+`pong` frames. Receivers tolerate CRLF and a UTF-8 BOM; frames are bounded to
+1 MiB. Ordinary parent IPC events use `data`; the browser bridge maps that
+payload to Core's `detail`.
 
-- [SWebBrowser API](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/WebBrowser/SWebBrowser): supports a provided IWebBrowserWindow, LoadString, script execution and binding
-- [UE 5.6 BindUObject](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/WebBrowser/SWebBrowser/BindUObject?application_version=5.6): lowercase JS names; asynchronous returned futures; permanent binding ownership
-- [FCreateBrowserWindowSettings](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/WebBrowser/FCreateBrowserWindowSettings) and [CreateBrowserWindow](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/WebBrowser/IWebBrowserSingleton/CreateBrowserWindow): native factory can return null
-- [CloseBrowser](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/WebBrowser/IWebBrowserWindow/CloseBrowser): force and blocking flags
-- [FWebNavigationRequest](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/WebBrowser/FWebNavigationRequest): main-frame and redirect information
-- [FTSTicker](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Core/FTSTicker): ticker ownership/removal API
-- [FCoreDelegates](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Core/FCoreDelegates): OnEnginePreExit occurs before core-module shutdown
-- [UE 5.6 plugins](https://dev.epicgames.com/documentation/en-us/unreal-engine/plugins-in-unreal-engine?application_version=5.6): source-module layout, project plugin location and rebuild requirements
-- [UE 5.6 toolchain](https://dev.epicgames.com/documentation/en-us/unreal-engine/setting-up-visual-studio-development-environment-for-cplusplus-projects-in-unreal-engine?application_version=5.6): use the installed engine's supported VS/MSVC/SDK selection
+This repository adds the negotiated `auroraview.unreal/1` extension. It does not
+replace parent IPC or invent a second call envelope:
 
-Some unversioned API pages currently render newer documentation. The versioned
-SWebBrowser overview could not be fetched, while the versioned 5.6 binding page
-was available. This is API-design evidence, not proof that every signature in
-the historical candidate compiles on 5.6, or the current experimental candidate
-compiles on 5.7. Exact installed headers and UHT/UBT remain the
-authority. Epic code was not copied into this candidate.
+```json
+{"type":"event","event":"__auroraview_rpc","data":{"type":"call","id":"request-id","method":"project.echo","params":{"value":1}}}
+{"type":"event","event":"__auroraview_call_result","data":{"id":"request-id","ok":true,"result":{"value":1}}}
+```
 
-## Interface coordination for shared Core owner
+The same extension carries calls to external Python providers and their
+results. Ordinary application events retain parent IPC's `{type,event,data}`
+shape and fan out to connected clients and live views.
 
-1. Keep `window.ipc.postMessage` as a supported transport injection point or
-   expose a documented setter; UE already uses that entry point unchanged
-2. Preserve `__auroraview_call_result` and error fields across host integrations
-3. For future nonblocking host jobs, define completion/cancellation/timeout
-   ownership once in Core before adding native async callback support
-4. Export a versioned bridge asset manifest for non-Python embedders; this local
-   candidate pins existing assets by commit and hash until then
-5. Do not let a published support table treat this source candidate as validated
+The listener starts only with an explicit host port and a token of at least
+32 characters. The client includes that token in `hello.data`, together with
+the requested capabilities. An accepted acknowledgement identifies the native
+PID, engine version, `editor` or `game` context, and the `event`, `rpc` and
+`tools` capabilities. The SDK can require that identity before sending work.
+This control connection requires an explicit accepted acknowledgement; it does
+not use upstream's optional legacy-handshake fallback.
+
+These handshake capabilities describe transport and tool routing. They do not
+claim CDP, transparency, browser-cookie support or rendering acceptance. A
+generic upstream `ParentBridge` needs the application's authentication and RPC
+negotiation to connect to this host.
+
+## Tools and Unreal control
+
+Native project modules register bounded synchronous handlers with
+`RegisterTool`. External Python providers use `Client.bind_call` or
+`Client.bind_api`; registration publishes a method description and parameter
+schema under the provider's connection. A disconnected provider loses its
+registrations and pending calls fail explicitly. The `auroraview.` and
+`unreal.` namespaces belong to the host; project tools use their own names.
+
+Native handlers execute on GameThread. The transport polls nonblocking sockets
+and routes reverse calls without waiting for Python on that thread. Python
+callbacks use bounded workers and can make further host calls. A call deadline
+ends the wait; it does not forcibly cancel a Python function already running.
+Tool providers must implement cooperative cancellation for longer work.
+
+`unreal.engine.info` supplies identity and capability readback. The explicit
+`-AuroraViewAllowControl` switch enables the native world/actor queries,
+console execution, and reflected property/UFunction operations on loaded
+objects. Reflection validates the object path and parameter conversion before
+calling `ProcessEvent`. Latent UFunctions require a project tool with explicit
+completion ownership. A console reply reports whether Unreal handled the
+command; callers should read back the state required by their own operation.
+
+`unreal.python.execute` is available only when the Editor's Python plugin is
+loaded. Packaged games use external Python and native/project tools. The plugin
+must already be installed and loaded in the target host; this API does not
+attach to an unmodified Unreal process or make Editor-only APIs available in a
+game.
+
+## Ownership and shutdown
+
+- Runtime owns the session registry, removable GameThread ticker, shared tools
+  and control listener.
+- A view owns its Slate/browser objects, strong UObject endpoint and independent
+  mailbox. Browser delegates capture mailbox and generation, not raw host objects.
+- Closing invalidates admission and queued work before native teardown. Reopening
+  preserves the logical ID and handlers but creates a fresh browser, endpoint,
+  token and presentation generation.
+- Replies recheck presentation generation. A handler that closes or reopens a
+  view cannot deliver its old result to the replacement.
+- Dock teardown waits for Slate to finish adopting a returned tab. Reuse accepts
+  only the current session's tab, including after a failed open or layout restore.
+- Pre-exit retires host work while engine/Slate services remain available; module
+  shutdown removes registrations idempotently. Dynamic reload is disabled for
+  live UCLASS/CEF ownership.
+- `auroraview.host.shutdown` acknowledges the authorized request and requests
+  normal engine exit after output draining. Validation separately requires a
+  zero process exit; forced cleanup never establishes a passing run.
+
+HTML fragments are trusted tool content. Document URLs, endpoint tokens,
+navigation rules and the early CSP constrain the owned view; they are not a
+sandbox for hostile same-document JavaScript. The optional control token grants
+access to registered tools in that host and should be treated accordingly.
+
+## Shared assets
+
+`ThirdParty/AuroraViewCore/manifest.json` records the exact upstream commit,
+asset paths and SHA-256 hashes. That asset revision is independent of a newer
+architecture audit. Build and validation receipts verify the packaged assets
+against the manifest. The Unreal adapter supplies engine-specific rendering
+and dispatch; it does not require the upstream Rust WebView2/Qt backend to own a
+second window or event loop.

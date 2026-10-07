@@ -74,7 +74,7 @@ bool FAuroraViewFailedDockRecovery::RunTest(const FString&)
     { AddError(Error); Module.Remove(RetryId); Module.Remove(RemoveId); return false; }
     TestTrue(TEXT("Remove accepts a managed failed-spawn tab"), Module.Remove(RemoveId));
     State->RetainedClosedTab = FGlobalTabmanager::Get()->FindExistingLiveTab(FName(TEXT("AuroraView.View.DockFailedSpawnManuallyClosed")));
-    if (!State->RetainedClosedTab) { AddError(TEXT("Expected owned failed-spawn tab")); return false; }
+    if (!State->RetainedClosedTab.IsValid()) { AddError(TEXT("Expected owned failed-spawn tab")); return false; }
     State->RetainedClosedTab->RequestCloseTab();
     ADD_LATENT_AUTOMATION_COMMAND(FWaitForRecovery(this, State));
     return true;

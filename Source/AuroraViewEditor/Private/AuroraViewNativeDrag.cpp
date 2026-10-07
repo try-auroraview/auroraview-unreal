@@ -36,7 +36,7 @@ public:
     {
         check(IsInGameThread());
         const auto Current = Host.Pin();
-        if (!Current) return FReply::Unhandled();
+        if (!Current.IsValid()) return FReply::Unhandled();
         if (bActors)
         {
             FAuroraViewActorDragCapture Capture;
@@ -84,8 +84,9 @@ public:
     {
         check(IsInGameThread());
         const auto Current = Host.Pin();
-        if (!Current || !Current->IsInteractionCurrent(Generation)) return FReply::Unhandled();
-        if (const auto Assets = Event.GetOperationAs<FAssetDragDropOp>())
+        if (!Current.IsValid() || !Current->IsInteractionCurrent(Generation)) return FReply::Unhandled();
+        const auto Assets = Event.GetOperationAs<FAssetDragDropOp>();
+        if (Assets.IsValid())
         {
             if (Assets->GetAssets().Num() == 0 || !Assets->GetAssets()[0].IsValid())
             {
@@ -96,7 +97,8 @@ public:
             Current->RecordNativeDrag(TEXT("accepted_by_inspector"), TEXT("assets"), 1);
             return FReply::Handled();
         }
-        if (const auto Actors = Event.GetOperationAs<FActorDragDropOp>())
+        const auto Actors = Event.GetOperationAs<FActorDragDropOp>();
+        if (Actors.IsValid())
         {
             const int32 Accepted = Current->InspectActors(Actors->Actors);
             if (Accepted == 0) return FReply::Unhandled();

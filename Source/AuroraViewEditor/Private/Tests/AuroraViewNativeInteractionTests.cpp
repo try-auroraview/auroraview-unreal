@@ -28,7 +28,7 @@ struct FInteractionState
 };
 bool IsEmpty(const TSharedPtr<SBox>& Container)
 {
-    return Container && Container->GetChildren()->Num() == 1
+    return Container.IsValid() && Container->GetChildren()->Num() == 1
         && Container->GetChildren()->GetChildAt(0) == SNullWidget::NullWidget;
 }
 void SelectOnly(AActor* Actor)
@@ -145,7 +145,10 @@ bool FAuroraViewNativeInteractionGuards::RunTest(const FString&)
     if (!AuroraViewFixture::CheckGuard(Error)) { AddError(Error); return false; }
     const auto State = MakeShared<FInteractionState>();
     for (FSelectionIterator It(*GEditor->GetSelectedActors()); It; ++It)
-        if (AActor* Actor = Cast<AActor>(*It); IsValid(Actor)) State->PreviousSelection.Add(Actor);
+    {
+        AActor* Actor = Cast<AActor>(*It);
+        if (IsValid(Actor)) State->PreviousSelection.Add(Actor);
+    }
     if (!AuroraViewFixture::Create(State->Fixtures, Error)) { AddError(Error); return false; }
     auto& Module = FModuleManager::LoadModuleChecked<FAuroraViewEditorModule>(TEXT("AuroraViewEditor"));
     Module.Remove(InteractionId);

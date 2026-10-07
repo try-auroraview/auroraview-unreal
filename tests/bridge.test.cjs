@@ -1,11 +1,14 @@
-const test = require('node:test');
+const nativeTest = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const root = path.join(__dirname, '..');
-const core = fs.readFileSync(path.join(root, 'ThirdParty/AuroraViewCore/event_bridge.js'), 'utf8');
-const stub = fs.readFileSync(path.join(root, 'ThirdParty/AuroraViewCore/bridge_stub.js'), 'utf8');
+for (const variant of ['pinned', 'chrome59']) {
+const test = (name, callback) => nativeTest(variant + ': ' + name, callback);
+const coreDirectory = variant === 'chrome59' ? 'Resources/legacy' : 'ThirdParty/AuroraViewCore';
+const core = fs.readFileSync(path.join(root, coreDirectory, 'event_bridge.js'), 'utf8');
+const stub = fs.readFileSync(path.join(root, coreDirectory, 'bridge_stub.js'), 'utf8');
 const transport = fs.readFileSync(path.join(root, 'Resources/ue_transport.js'), 'utf8');
 const bootstrap = fs.readFileSync(path.join(root, 'Resources/ue_bootstrap.js'), 'utf8');
 
@@ -150,12 +153,19 @@ test('early invoke is rejected before Core can replay it as a host call', async 
   vm.runInContext(core,h.context);
   assert.equal(h.wire.filter(x=>x.payload.type==='call').length,0);
 });
-test('post-ready invoke keeps its distinct type for native rejection', async () => {
+test('post-ready invoke receives the canonical invoke result', async () => {
   const h=host(); const pending=h.win.auroraview.invoke('api.echo',{value:1});
   const message=h.wire.at(-1).payload; assert.equal(message.type,'invoke');
-  h.win.auroraview.trigger('__auroraview_call_result',{id:message.id,ok:false,
-    error:{name:'NotSupportedError',message:'call only',code:'UNSUPPORTED'}});
-  await assert.rejects(pending,e=>e.code==='UNSUPPORTED');
+  h.win.auroraview.trigger('__invoke_result__',{id:message.id,ok:true,result:42});
+  assert.equal(await pending,42);
+});
+test('rejected invoke queue uses the canonical result event', async () => {
+  const h=host(()=>Promise.resolve(false));
+  const original=h.win.auroraview.trigger;
+  const names=[];
+  h.win.auroraview.trigger=function(name,data){names.push(name);return original.call(this,name,data);};
+  await assert.rejects(h.win.auroraview.invoke('tools.echo'),e=>e.code==='TRANSPORT_REJECTED');
+  assert.ok(names.includes('__invoke_result__'));
 });
 test('early whenReady resolves to the installed Core bridge', async () => {
   const h=host(undefined,{noCore:true});
@@ -204,3 +214,4 @@ test('retained startup whenReady resolves immediately after Core is ready', asyn
   const wait=h.win.auroraview.whenReady; vm.runInContext(core,h.context);
   assert.equal(await wait(),h.win.auroraview);
 });
+}

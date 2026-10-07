@@ -56,7 +56,6 @@ bool FAuroraViewBridgeSmoke::RunTest(const FString& Parameters)
     auto& Module = FModuleManager::LoadModuleChecked<FAuroraViewEditorModule>(TEXT("AuroraViewEditor"));
     const FName Id(TEXT("AuroraViewAutomation"));
     const auto State = MakeShared<FBridgeSmokeState>();
-    State->Deadline = FPlatformTime::Seconds() + 15.0;
     Module.BindCall(Id, TEXT("test.echo"), [State](const TSharedPtr<FJsonValue>& Params)
     {
         State->bEchoOnGameThread = IsInGameThread();
@@ -97,6 +96,9 @@ bool FAuroraViewBridgeSmoke::RunTest(const FString& Parameters)
         Module.Remove(Id);
         return false;
     }
+    // Cold WebBrowser module initialization can block Open on older engines.
+    // Start the asynchronous roundtrip budget only after the window exists.
+    State->Deadline = FPlatformTime::Seconds() + 60.0;
     ADD_LATENT_AUTOMATION_COMMAND(FWaitForBridgeSmoke(this, State));
     return true;
 }

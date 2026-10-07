@@ -1,4 +1,5 @@
 #include "AuroraViewWorkspace.h"
+#include "AuroraViewCompatibility.h"
 #include "Framework/Docking/LayoutService.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
@@ -57,18 +58,26 @@ void SAuroraViewWorkspace::Construct(const FArguments& Args)
             SNew(SHorizontalBox)
             + SHorizontalBox::Slot().AutoWidth().Padding(3)
             [ SNew(SButton).Text(FText::FromString(TEXT("Inspector"))).OnClicked_Lambda([this]()
-                { Manager->TryInvokeTab(InspectorTab); return FReply::Handled(); }) ]
+                { AuroraViewCompatibility::TryInvokeTab(Manager.ToSharedRef(), InspectorTab); return FReply::Handled(); }) ]
             + SHorizontalBox::Slot().AutoWidth().Padding(3)
             [ SNew(SButton).Text(FText::FromString(TEXT("Outliner"))).OnClicked_Lambda([this]()
-                { Manager->TryInvokeTab(OutlinerTab); return FReply::Handled(); }) ]
+                { AuroraViewCompatibility::TryInvokeTab(Manager.ToSharedRef(), OutlinerTab); return FReply::Handled(); }) ]
             + SHorizontalBox::Slot().AutoWidth().Padding(3)
             [ SNew(SButton).Text(FText::FromString(TEXT("Assets"))).OnClicked_Lambda([this]()
-                { Manager->TryInvokeTab(AssetsTab); return FReply::Handled(); }) ]
+                { AuroraViewCompatibility::TryInvokeTab(Manager.ToSharedRef(), AssetsTab); return FReply::Handled(); }) ]
             + SHorizontalBox::Slot().AutoWidth().Padding(3)
             [ SNew(SButton).Text(FText::FromString(TEXT("Toggle eligible tabs in sidebars")))
-                .ToolTipText(FText::FromString(TEXT("Move eligible tabs to temporary native sidebars, or restore remembered tabs")))
+                .IsEnabled(ENGINE_MAJOR_VERSION >= 5)
+                .ToolTipText(FText::FromString(ENGINE_MAJOR_VERSION >= 5
+                    ? TEXT("Move eligible tabs to temporary native sidebars, or restore remembered tabs")
+                    : TEXT("Native sidebars require Unreal Engine 5")))
                 .OnClicked_Lambda([this]()
-                { Manager->ToggleSidebarOpenTabs(); return FReply::Handled(); }) ]
+                {
+#if ENGINE_MAJOR_VERSION >= 5
+                    Manager->ToggleSidebarOpenTabs();
+#endif
+                    return FReply::Handled();
+                }) ]
             + SHorizontalBox::Slot().AutoWidth().Padding(3)
             [ SNew(SButton).Text(FText::FromString(TEXT("Save layout"))).OnClicked_Lambda([this]()
                 { SaveLayout(); return FReply::Handled(); }) ]
@@ -88,11 +97,11 @@ TSharedRef<SDockTab> SAuroraViewWorkspace::SpawnPanel(const FSpawnTabArgs& Args)
 void SAuroraViewWorkspace::SaveLayout()
 {
     check(IsInGameThread());
-    if (Manager) Persist(Manager->PersistLayout());
+    if (Manager.IsValid()) Persist(Manager->PersistLayout());
 }
 SAuroraViewWorkspace::~SAuroraViewWorkspace()
 {
-    if (!Manager) return;
+    if (!Manager.IsValid()) return;
     SaveLayout();
     Manager->SetOnPersistLayout(FTabManager::FOnPersistLayout());
     Manager->CloseAllAreas();

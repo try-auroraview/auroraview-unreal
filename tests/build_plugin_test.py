@@ -53,6 +53,31 @@ def pe_dll(machine=0x8664, characteristics=0x2022):
     return bytes(data)
 
 
+def coff_archive():
+    object_bytes = struct.pack('<H', 0x8664) + b'\0' * 30
+    member = (b'fixture.obj/'.ljust(16) + b'0'.ljust(12) + b'0'.ljust(6) + b'0'.ljust(6)
+              + b'0'.ljust(8) + str(len(object_bytes)).encode().ljust(10) + b'`\n')
+    return b'!<arch>\n' + member + object_bytes
+
+
+class BuildEnvironmentTests(unittest.TestCase):
+    def test_modern_uat_enables_ipv6_without_changing_runner_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            log_path = output / 'uat.log'
+            overrides = builder.build_environment({'version': '5.8'}, output)
+            with patch.dict(builder.os.environ, {'DOTNET_SYSTEM_NET_DISABLEIPV6': '1'}):
+                with patch.object(builder.os, 'name', 'nt'), patch.object(builder.subprocess, 'run') as run:
+                    run.return_value.returncode = 0
+                    self.assertEqual(builder.run_uat(['RunUAT.bat'], output, log_path, overrides), 0)
+                self.assertEqual(run.call_args.kwargs['env']['DOTNET_SYSTEM_NET_DISABLEIPV6'], '0')
+                self.assertEqual(builder.os.environ['DOTNET_SYSTEM_NET_DISABLEIPV6'], '1')
+
+    def test_legacy_uat_keeps_its_existing_network_environment(self):
+        self.assertNotIn('DOTNET_SYSTEM_NET_DISABLEIPV6',
+                         builder.build_environment({'version': '4.18'}, ROOT))
+
+
 class BuildPluginTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -62,7 +87,11 @@ class BuildPluginTests(unittest.TestCase):
         cls.template_engine = Path(cls.template.name) / 'engine'
         source, engine = cls.template_source, cls.template_engine
         source.mkdir()
-        write(source / 'AuroraView.uplugin', (ROOT / 'AuroraView.uplugin').read_text(encoding='utf-8'))
+        write(source / 'AuroraView.uplugin', json.dumps({'FileVersion': 3, 'SupportedTargetPlatforms': ['Win64'],
+            'Modules': [{'Name': builder.MODULE, 'Type': 'Editor', 'LoadingPhase': 'Default',
+                         'PlatformAllowList': ['Win64'], 'TargetAllowList': ['Editor']},
+                        {'Name': builder.RUNTIME_MODULE, 'Type': 'Runtime', 'LoadingPhase': 'Default',
+                         'PlatformAllowList': ['Win64']}]}))
         write(source / 'Source/AuroraViewEditor/Fixture.cpp', '// unit test fixture\n')
         write(source / 'Resources/nested/fixture.html', '<!doctype html><title>fixture</title>\n')
         write(source / 'LICENSE', 'Plugin license fixture\n')
@@ -81,8 +110,11 @@ class BuildPluginTests(unittest.TestCase):
         (engine / 'Engine/Binaries/ThirdParty/CEF3/Win64').mkdir(parents=True)
         write(engine / 'Engine/Binaries/Win64/UnrealEditor.modules',
               json.dumps({'BuildId': 'fixture-engine-build', 'Modules': {}}))
+        # The template's .git directory is copied below; background maintenance
+        # must not create/remove lock files while copytree enumerates it.
         for arguments in [('init', '--quiet'), ('config', 'user.name', 'loonghao'),
-                          ('config', 'user.email', 'hal.long@outlook.com'), ('add', '.'),
+                          ('config', 'user.email', 'hal.long@outlook.com'),
+                          ('config', 'maintenance.auto', 'false'), ('config', 'gc.auto', '0'), ('add', '.'),
                           ('commit', '--quiet', '-m', 'test: create synthetic build fixture')]:
             subprocess.run(['git', '-C', str(source), *arguments],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
@@ -110,7 +142,7 @@ class BuildPluginTests(unittest.TestCase):
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         return process.stdout.decode('utf-8').strip()
 
-    def fake_uat(self, command, source, log_path):
+    def fake_uat(self, command, source, log_path, environment_overrides):
         package = Path(next(value[len('-Package='):] for value in command if value.startswith('-Package=')))
         self.assertFalse(package.exists(), 'UAT must receive a fresh package destination')
         package.mkdir()
@@ -118,9 +150,41 @@ class BuildPluginTests(unittest.TestCase):
             shutil.copytree(source / name, package / name)
         for name in ['AuroraView.uplugin', 'LICENSE']:
             shutil.copy2(source / name, package / name)
-        write(package / 'Binaries/Win64' / builder.DLL, pe_dll())
-        write(package / 'Binaries/Win64/UnrealEditor.modules', json.dumps({
-            'BuildId': 'fixture-engine-build', 'Modules': {builder.MODULE: builder.DLL}}))
+        policy = builder.preflight_engine.engine_policy(json.loads(self.version.read_text()))
+        editor = policy['editor_target']
+        binaries = {name: f'{editor}-{name}.dll' for name in [builder.MODULE, builder.RUNTIME_MODULE]}
+        for name in binaries.values():
+            write(package / 'Binaries/Win64' / name, pe_dll())
+        write(package / f'Binaries/Win64/{editor}.modules', json.dumps({
+            'BuildId': 'fixture-engine-build', 'Modules': binaries}))
+        host = package / 'HostProject'
+        host_plugin = host / 'Plugins/AuroraView'
+        for configuration in ['Development', 'Shipping']:
+            if policy['legacy_receipts']:
+                suffix = '' if configuration == 'Development' else '-Win64-Shipping'
+                relative = Path(f'Binaries/Win64/UE4-{builder.RUNTIME_MODULE}{suffix}.lib')
+                data = coff_archive()
+                write(host_plugin / relative, data)
+                write(package / relative, data)
+                receipt_name = 'UE4Game.target' if configuration == 'Development' else 'UE4Game-Win64-Shipping.target'
+                write(host_plugin / 'Binaries/Win64' / receipt_name, json.dumps({
+                    'TargetName': 'UE4Game', 'Platform': 'Win64', 'Configuration': configuration,
+                    'BuildProducts': [{'Path': str(host_plugin / relative), 'Type': 'StaticLibrary'}]}))
+            else:
+                intermediate = 'UE4' if policy['version'].startswith('4.') else policy['game_target']
+                relative = Path(f'Intermediate/Build/Win64/x64/{intermediate}/{configuration}/{builder.RUNTIME_MODULE}')
+                object_name = f'Module.{builder.RUNTIME_MODULE}.cpp.obj'
+                object_data = struct.pack('<H', 0x8664) + b'\0' * 30
+                precompiled_name = builder.RUNTIME_MODULE + '.precompiled'
+                for root in [host_plugin, package]:
+                    write(root / relative / object_name, object_data)
+                    write(root / relative / precompiled_name, json.dumps({'OutputFiles': [object_name]}))
+                manifest = builder.ET.Element('BuildManifest')
+                products = builder.ET.SubElement(manifest, 'BuildProducts')
+                for name in [precompiled_name, object_name]:
+                    builder.ET.SubElement(products, 'string').text = str(host_plugin / relative / name)
+                write(host / f'Saved/Manifest-{policy["game_target"]}-Win64-{configuration}.xml',
+                      builder.ET.tostring(manifest))
         write(log_path, self.uat_log.encode('utf-8'))
         if self.mutate_package:
             self.mutate_package(package)
@@ -153,7 +217,13 @@ class BuildPluginTests(unittest.TestCase):
         self.assertEqual(receipt['compiler_toolchains'][0]['windows_sdk_version'], '10.0.26100.0')
         self.assertEqual(receipt['compiler_toolchains'][0]['windows_sdk_path'],
                          'C:\\Program Files (x86)\\Windows Kits\\10')
-        self.assertEqual(receipt['environment_overrides'], builder.BUILD_ENVIRONMENT)
+        for name, value in builder.BUILD_ENVIRONMENT.items():
+            self.assertEqual(receipt['environment_overrides'][name], value)
+        self.assertEqual(receipt['unreal_game_compile'], 'pass')
+        self.assertEqual(receipt['packaged_game'], 'not_run')
+        self.assertEqual([target['configuration'] for target in receipt['game_targets']], ['Development', 'Shipping'])
+        self.assertTrue((self.output / 'HostProject').is_dir())
+        self.assertFalse((self.output / 'Package/HostProject').exists())
         self.assertIn('-StrictIncludes', receipt['build_command'])
         self.assertIn('-TargetPlatforms=Win64', receipt['build_command'])
         self.assertEqual(receipt['uat_exit_code'], 0)
@@ -167,6 +237,14 @@ class BuildPluginTests(unittest.TestCase):
         self.assertEqual(receipt['status'], 'pass', receipt['errors'])
         self.assertTrue(receipt['source']['dirty'])
         self.assertIn('Resources/untracked.js', receipt['source']['files'])
+
+    def test_yearless_ue58_toolchain_log_preserves_actual_version(self):
+        log = self.root / 'ue58.log'
+        log.write_text(TOOLCHAIN_LOG.replace('Visual Studio 2022 ', 'Visual Studio '), encoding='utf-8')
+        evidence = builder.compiler_evidence(log)
+        self.assertEqual(evidence[0]['compiler'], 'Visual Studio')
+        self.assertEqual(evidence[0]['toolchain_version'], '14.44.35221')
+        self.assertEqual(evidence[0]['windows_sdk_version'], '10.0.26100.0')
 
     def test_preflight_blocks_other_engine_versions_before_uat(self):
         write(self.version, json.dumps({'MajorVersion': 5, 'MinorVersion': 6}))
@@ -289,6 +367,106 @@ class BuildPluginTests(unittest.TestCase):
         with self.assertRaisesRegex(builder.BuildError, 'not an empty directory'):
             self.build()
         self.assertEqual((self.output / 'build-receipt.json').read_bytes(), original)
+
+    def test_editor_binaries_do_not_prove_game_runtime_compilation(self):
+        self.mutate_package = lambda package: (package / 'HostProject/Saved/Manifest-UnrealGame-Win64-Shipping.xml').unlink()
+        self.assert_failed(self.build(), 'Cannot read actual Game build manifest')
+
+    def test_runtime_editor_dll_is_required_alongside_editor_facade(self):
+        self.mutate_package = lambda package: (package / 'Binaries/Win64/UnrealEditor-AuroraViewRuntime.dll').unlink()
+        self.assert_failed(self.build(), 'Required native DLL is absent')
+
+    def test_editor_only_descriptor_cannot_satisfy_runtime_contract(self):
+        path = self.source / 'AuroraView.uplugin'
+        descriptor = json.loads(path.read_text())
+        descriptor['Modules'] = descriptor['Modules'][:1]
+        write(path, json.dumps(descriptor))
+        self.assert_failed(self.build(), 'both Win64 Runtime and Editor modules')
+        self.runner.assert_not_called()
+
+    def test_object_files_without_reusable_runtime_manifest_do_not_form_a_package(self):
+        def change(package):
+            path = package / 'HostProject/Saved/Manifest-UnrealGame-Win64-Development.xml'
+            tree = builder.ET.parse(path)
+            products = tree.find('BuildProducts')
+            for element in list(products):
+                if element.text.endswith('.precompiled'):
+                    products.remove(element)
+            path.write_bytes(builder.ET.tostring(tree.getroot()))
+        self.mutate_package = change
+        self.assert_failed(self.build(), 'No packaged Runtime library or precompiled manifest')
+
+    def test_shipping_manifest_cannot_reuse_development_runtime_products(self):
+        def change(package):
+            path = package / 'HostProject/Saved/Manifest-UnrealGame-Win64-Shipping.xml'
+            write(path, path.read_bytes().replace(b'Shipping', b'Development'))
+        self.mutate_package = change
+        self.assert_failed(self.build(), 'does not belong to the requested Game target')
+
+    def test_game_native_output_cannot_be_replaced_with_source_or_text(self):
+        def change(package):
+            for root in [package, package / 'HostProject/Plugins/AuroraView']:
+                write(root / 'Intermediate/Build/Win64/x64/UnrealGame/Development/AuroraViewRuntime/Module.AuroraViewRuntime.cpp.obj',
+                      b'not a native object file, even with consistent package hashes')
+        self.mutate_package = change
+        self.assert_failed(self.build(), 'Not a native Win64 COFF object')
+
+    def test_game_precompiled_manifest_cannot_reference_missing_object(self):
+        self.mutate_package = lambda package: (package /
+            'Intermediate/Build/Win64/x64/UnrealGame/Shipping/AuroraViewRuntime/Module.AuroraViewRuntime.cpp.obj').unlink()
+        self.assert_failed(self.build(), 'Runtime precompiled object is absent')
+
+    def test_require_clean_rejects_dirty_checkout_before_uat(self):
+        write(self.source / 'Resources/untracked.js', '// untracked fixture\n')
+        receipt = builder.build(self.engine, self.output, self.source, require_clean=True)
+        self.assert_failed(receipt, 'clean source checkout is required')
+        self.runner.assert_not_called()
+
+    def test_each_explicit_version_selects_actual_editor_and_game_targets(self):
+        for index, version in enumerate(builder.preflight_engine.SUPPORTED_VERSIONS):
+            with self.subTest(version=version):
+                self.output = self.root / f'version-{index}'
+                major, minor = map(int, version.split('.'))
+                write(self.version, json.dumps({'MajorVersion': major, 'MinorVersion': minor}))
+                editor = 'UE4Editor' if major == 4 else 'UnrealEditor'
+                write(self.engine / f'Engine/Binaries/Win64/{editor}.exe', 'synthetic engine fixture')
+                write(self.engine / f'Engine/Binaries/Win64/{editor}.modules', json.dumps({'BuildId': 'fixture-engine-build'}))
+                receipt = builder.build(self.engine, self.output, self.source, expected_version=version)
+                self.assertEqual(receipt['status'], 'pass', receipt['errors'])
+                self.assertEqual('-StrictIncludes' in receipt['build_command'], version != '4.18')
+                self.assertEqual('-VS2019' in receipt['build_command'], version == '4.26')
+                self.assertEqual(receipt['game_targets'][0]['target'], 'UE4Game' if major == 4 else 'UnrealGame')
+                self.assertEqual(receipt['packaged_game'], 'not_run')
+
+    def test_legacy_compiler_not_logged_is_explicit_instead_of_invented(self):
+        write(self.version, json.dumps({'MajorVersion': 4, 'MinorVersion': 18}))
+        write(self.engine / 'Engine/Binaries/Win64/UE4Editor.exe', 'synthetic engine fixture')
+        write(self.engine / 'Engine/Binaries/Win64/UE4Editor.modules', json.dumps({'BuildId': 'fixture-engine-build'}))
+        self.uat_log = 'fixture legacy UBT emitted no compiler identity\n'
+        receipt = self.build()
+        self.assertEqual(receipt['status'], 'pass', receipt['errors'])
+        self.assertEqual(receipt['compiler_toolchains'], [])
+        self.assertEqual(receipt['compiler_evidence_status'], 'not_logged_by_legacy_ubt')
+
+    def test_ue426_game_manifest_can_record_configuration_named_static_libraries(self):
+        write(self.version, json.dumps({'MajorVersion': 4, 'MinorVersion': 26}))
+        write(self.engine / 'Engine/Binaries/Win64/UE4Editor.exe', 'synthetic engine fixture')
+        write(self.engine / 'Engine/Binaries/Win64/UE4Editor.modules', json.dumps({'BuildId': 'fixture-engine-build'}))
+        def change(package):
+            plugin = package / 'HostProject/Plugins/AuroraView'
+            for configuration in ['Development', 'Shipping']:
+                suffix = '' if configuration == 'Development' else '-Win64-Shipping'
+                relative = Path(f'Binaries/Win64/UE4-AuroraViewRuntime{suffix}.lib')
+                for root in [package, plugin]:
+                    write(root / relative, coff_archive())
+                manifest = builder.ET.Element('BuildManifest')
+                products = builder.ET.SubElement(manifest, 'BuildProducts')
+                builder.ET.SubElement(products, 'string').text = str(plugin / relative)
+                write(package / f'HostProject/Saved/Manifest-UE4Game-Win64-{configuration}.xml', builder.ET.tostring(manifest))
+        self.mutate_package = change
+        receipt = self.build()
+        self.assertEqual(receipt['status'], 'pass', receipt['errors'])
+        self.assertEqual(receipt['unreal_game_compile'], 'pass')
 
 
 if __name__ == '__main__':

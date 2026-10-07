@@ -1,6 +1,9 @@
 import copy
 import importlib.util
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -167,5 +170,189 @@ class EvidenceRunTests(unittest.TestCase):
         case['actual_host_state'][name]=1
         assertion=next(a for a in case['assertions'] if a['name']==name);assertion.update(actual=1,expected=1)
         self.assertTrue(any('criterion' in e for e in self.check()))
+
+class EditorAutomationSchemaTests(unittest.TestCase):
+    """Execute the actual PowerShell gates using synthetic engine report schemas."""
+
+    TEST_NAMES = (
+        'AuroraView.Editor.BridgeRoundTrip',
+        'AuroraView.Editor.DockedLifecycle',
+        'AuroraView.Editor.DockFactoryReentrancy',
+        'AuroraView.Editor.FailedDockRecovery',
+        'AuroraView.Editor.TypedInspectorGuards',
+        'AuroraView.Showcase.FixtureBridgeRoundTrip',
+        'AuroraView.Showcase.FixtureTransform',
+        'AuroraView.Showcase.NativeInteractionGuards',
+        'AuroraView.Runtime.ControlReflection',
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.powershell = shutil.which('pwsh') or shutil.which('powershell')
+        if not cls.powershell:
+            raise unittest.SkipTest('PowerShell is required to execute the Editor report gate')
+
+    @classmethod
+    def report(cls, version):
+        # FAutomatedTestResult / FAutomatedTestPassResults in the installed
+        # AutomationControllerManager.h: UE4 has no InProcess or test Duration;
+        # UE4.18 uses Events, while 4.26 and UE5 use execution Entries.
+        tests = []
+        for index, name in enumerate(cls.TEST_NAMES):
+            test = {'testDisplayName': name.rsplit('.', 1)[-1], 'fullTestPath': name,
+                    'state': 'Success', 'warnings': int(index < 3), 'errors': 0,
+                    'artifacts': [], 'events' if version == '4.18' else 'entries': []}
+            if version.startswith('5.'):
+                test.update(duration=0.25, deviceInstance=['synthetic-only'])
+            tests.append(test)
+        report = {'succeeded': 6, 'succeededWithWarnings': 3, 'failed': 0, 'notRun': 0,
+                  'totalDuration': 2.25, 'comparisonExported': False,
+                  'comparisonExportDirectory': '', 'tests': tests}
+        if version == '4.26':
+            report.update(clientDescriptor='synthetic-only', reportCreatedOn='2026.10.08-00.00.00')
+        elif version.startswith('5.'):
+            report.update(inProcess=0, devices=[], reportCreatedOn='2026.10.08-00.00.00')
+        return report
+
+    def run_powershell(self, root, body, arguments):
+        harness = root / 'validator-harness.ps1'
+        harness.write_text('''Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$parseTokens = $null
+$parseErrors = $null
+$validator = [Management.Automation.Language.Parser]::ParseFile($args[0], [ref]$parseTokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+$functions = $validator.FindAll({ param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -in @('Get-ReportCounter', 'Assert-AutomationReport', 'Write-JsonFile', 'Invoke-FixtureEditor')
+}, $true)
+foreach ($function in $functions) { Invoke-Expression $function.Extent.Text }
+''' + body, encoding='utf-8')
+        result = subprocess.run(
+            [self.powershell, '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+             '-File', str(harness), str(ROOT / 'scripts/validate_editor.ps1'), *arguments],
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout.strip().splitlines()[-1])
+
+    def assert_reports(self, cases):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = []
+            for index, (name, version, report, accepted) in enumerate(cases):
+                path = root / f'report-{index}.json'
+                path.write_text(json.dumps(report), encoding='utf-8')
+                inputs.append({'name': name, 'version': version, 'path': str(path)})
+            cases_path = root / 'cases.json'
+            cases_path.write_text(json.dumps(inputs), encoding='utf-8')
+            outcomes = self.run_powershell(root, '''
+$cases = Get-Content -LiteralPath $args[1] -Raw | ConvertFrom-Json
+$outcomes = @(foreach ($case in $cases) {
+    try {
+        $tests = @(Assert-AutomationReport -Path $case.path -EngineVersion $case.version)
+        [pscustomobject]@{ name = $case.name; accepted = $true; tests = $tests; error = $null }
+    } catch {
+        [pscustomobject]@{ name = $case.name; accepted = $false; tests = @(); error = $_.Exception.Message }
+    }
+})
+ConvertTo-Json -InputObject $outcomes -Depth 12 -Compress
+''', [str(cases_path)])
+        self.assertEqual(len(outcomes), len(cases))
+        for case, outcome in zip(cases, outcomes):
+            with self.subTest(case=case[0]):
+                self.assertEqual(outcome['accepted'], case[3], outcome['error'])
+                if case[3]:
+                    self.assertEqual({test['fullTestPath'] for test in outcome['tests']}, set(self.TEST_NAMES))
+                    self.assertEqual(len(outcome['tests']), 9)
+                    self.assertTrue(all(test['errors'] == 0 and test['state'] == 'Success'
+                                        for test in outcome['tests']))
+
+    def test_actual_ue4_schema_without_inprocess_or_test_duration_passes(self):
+        self.assert_reports([(version, version, self.report(version), True) for version in ('4.18', '4.26')])
+
+    def test_ue5_still_requires_its_inprocess_counter(self):
+        cases = []
+        for version in ('5.5', '5.7', '5.8'):
+            report = self.report(version)
+            cases.append((version + '-complete', version, copy.deepcopy(report), True))
+            del report['inProcess']
+            cases.append((version + '-missing-inProcess', version, report, False))
+        self.assert_reports(cases)
+
+    def test_ue4_validates_inprocess_whenever_present(self):
+        cases = []
+        for version in ('4.18', '4.26'):
+            for value in (0, 1, None, False, '0', -1, 0.5):
+                report = self.report(version)
+                report['inProcess'] = value
+                cases.append((f'{version}-{value!r}', version, report, type(value) is int and value == 0))
+        self.assert_reports(cases)
+
+    def test_failed_unrun_or_unfinished_tests_fail_even_with_forged_success_totals(self):
+        cases = []
+        for version in ('4.18', '4.26', '5.7'):
+            for state in ('Fail', 'NotRun', 'InProcess', 'Skipped', None):
+                report = self.report(version)
+                report['tests'][0]['state'] = state
+                cases.append((f'{version}-{state}', version, report, False))
+        self.assert_reports(cases)
+
+    def test_complete_nine_test_roster_cannot_be_missing_or_duplicated(self):
+        cases = []
+        for version in ('4.18', '4.26', '5.7'):
+            report = self.report(version)
+            report['tests'].pop()
+            report['succeeded'] -= 1
+            cases.append((version + '-missing-runtime', version, report, False))
+            report = self.report(version)
+            report['tests'][-1] = copy.deepcopy(report['tests'][0])
+            cases.append((version + '-duplicate-replaces-runtime', version, report, False))
+            report = self.report(version)
+            report['tests'][-1]['fullTestPath'] = 'AuroraView.Unknown'
+            cases.append((version + '-unknown-replaces-runtime', version, report, False))
+        self.assert_reports(cases)
+
+    def test_error_counters_and_pass_totals_remain_strict(self):
+        cases = []
+        for version in ('4.18', '4.26', '5.7'):
+            for field in ('failed', 'notRun', 'succeeded', 'succeededWithWarnings'):
+                report = self.report(version)
+                del report[field]
+                cases.append((f'{version}-missing-{field}', version, report, False))
+                report = self.report(version)
+                report[field] += 1
+                cases.append((f'{version}-wrong-{field}', version, report, False))
+            for value in (1, None, '0', False, -1, 0.5):
+                report = self.report(version)
+                report['tests'][0]['errors'] = value
+                cases.append((f'{version}-errors-{value!r}', version, report, False))
+            report = self.report(version)
+            del report['tests'][0]['errors']
+            cases.append((version + '-missing-errors', version, report, False))
+        self.assert_reports(cases)
+
+    @unittest.skipUnless(os.name == 'nt', 'The Editor process gate uses Windows Start-Process')
+    def test_editor_process_must_exit_normally_with_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcomes = self.run_powershell(Path(tmp), '''
+$evidenceDirectory = $PSScriptRoot
+$outputPath = $PSScriptRoot
+$TimeoutSeconds = 30
+$outcomes = @(foreach ($code in @(0, 7)) {
+    $phase = 'synthetic-exit-' + $code
+    $accepted = $true
+    try {
+        Invoke-FixtureEditor -Executable $args[1] -Arguments ('-NoLogo -NoProfile -NonInteractive -Command "exit ' + $code + '"') -Phase $phase
+    } catch { $accepted = $false }
+    $receipt = Get-Content -LiteralPath (Join-Path $evidenceDirectory ($phase + '-process.json')) -Raw | ConvertFrom-Json
+    [pscustomobject]@{ accepted = $accepted; exitCode = $receipt.exitCode; timedOut = $receipt.timedOut; pid = $receipt.pid }
+})
+ConvertTo-Json -InputObject $outcomes -Depth 4 -Compress
+''', [self.powershell])
+        self.assertEqual([item['accepted'] for item in outcomes], [True, False])
+        self.assertEqual([item['exitCode'] for item in outcomes], [0, 7])
+        self.assertTrue(all(not item['timedOut'] and item['pid'] > 0 for item in outcomes))
+
 
 if __name__=='__main__':unittest.main()

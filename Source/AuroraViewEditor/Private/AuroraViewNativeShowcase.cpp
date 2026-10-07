@@ -176,13 +176,13 @@ FString FAuroraViewNativeShowcase::IdFor(AActor* Actor)
             { It.RemoveCurrent(); break; }
         if (ActorsById.Num() >= 256) return FString();
     }
-    const FString Id = FGuid::NewGuid().ToString(EGuidFormats::Digits);
-    ActorsById.Add(Id, Actor);
-    return Id;
+    const FString ActorId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    ActorsById.Add(ActorId, Actor);
+    return ActorId;
 }
-AActor* FAuroraViewNativeShowcase::ResolveActor(const FString& Id)
+AActor* FAuroraViewNativeShowcase::ResolveActor(const FString& ActorId)
 {
-    const auto* Weak = ActorsById.Find(Id);
+    const auto* Weak = ActorsById.Find(ActorId);
     AActor* Actor = Weak ? Weak->Get() : nullptr;
     return IsValid(Actor) && Actor->GetWorld() == World.Get() ? Actor : nullptr;
 }
@@ -309,8 +309,8 @@ TSharedRef<FJsonObject> FAuroraViewNativeShowcase::Snapshot()
     TArray<TSharedPtr<FJsonValue>> Selection;
     for (const auto& Weak : Selected)
     {
-        const FString Id = IdFor(Weak.Get());
-        if (!Id.IsEmpty()) Selection.Add(MakeShared<FJsonValueString>(Id));
+        const FString ActorId = IdFor(Weak.Get());
+        if (!ActorId.IsEmpty()) Selection.Add(MakeShared<FJsonValueString>(ActorId));
     }
     int32 ActualSelectedCount = 0;
     if (GEditor) for (FSelectionIterator It(*GEditor->GetSelectedActors()); It; ++It)
@@ -455,9 +455,9 @@ void FAuroraViewNativeShowcase::RebuildOutliner(UWorld* Current)
 }
 FAuroraViewReply FAuroraViewNativeShowcase::SelectActor(const TSharedPtr<FJsonObject>& Params)
 {
-    FString Id;
-    if (!Params || !Params->TryGetStringField(TEXT("actorId"), Id)) return Failure(TEXT("INVALID_PARAMS"), TEXT("actorId required"));
-    AActor* Actor = ResolveActor(Id);
+    FString ActorId;
+    if (!Params || !Params->TryGetStringField(TEXT("actorId"), ActorId)) return Failure(TEXT("INVALID_PARAMS"), TEXT("actorId required"));
+    AActor* Actor = ResolveActor(ActorId);
     if (!Actor || !GEditor) return Failure(TEXT("STALE_ACTOR"), TEXT("Actor is absent from this world/session"));
     const TWeakObjectPtr<AActor> WeakActor(Actor);
     const TWeakObjectPtr<UWorld> StartedWorld(World);
@@ -476,15 +476,15 @@ FAuroraViewReply FAuroraViewNativeShowcase::SelectActor(const TSharedPtr<FJsonOb
 }
 FAuroraViewReply FAuroraViewNativeShowcase::SetTransform(const TSharedPtr<FJsonObject>& Params)
 {
-    FString Id;
+    FString ActorId;
     const TSharedPtr<FJsonObject>* Desired = nullptr;
     const TSharedPtr<FJsonObject>* Expected = nullptr;
     FTransform Next, Previous;
-    if (!Params || !Params->TryGetStringField(TEXT("actorId"), Id)
+    if (!Params || !Params->TryGetStringField(TEXT("actorId"), ActorId)
         || !Params->TryGetObjectField(TEXT("transform"), Desired) || !ReadTransform(*Desired, Next)
         || !Params->TryGetObjectField(TEXT("expected"), Expected) || !ReadTransform(*Expected, Previous))
         return Failure(TEXT("INVALID_PARAMS"), TEXT("Finite bounded location/rotation/positive scale and expected transform required"));
-    AActor* Actor = ResolveActor(Id);
+    AActor* Actor = ResolveActor(ActorId);
     if (!CanEdit(Actor) || !GEditor->GetSelectedActors()->IsSelected(Actor) || GetSelectedActors().Num() != 1)
         return Failure(TEXT("NOT_EDITABLE"), TEXT("Select one valid unlocked Editor actor with a root component"));
     if (!Actor->GetActorTransform().Equals(Previous, 0.0001))

@@ -55,7 +55,7 @@ private:
     void RebuildOutliner(UWorld* Current);
     void ContentSelectionChanged(const TArray<FAssetData>& Assets, bool bIsPrimaryBrowser);
     FString IdFor(AActor* Actor);
-    AActor* ResolveActor(const FString& Id);
+    AActor* ResolveActor(const FString& ActorId);
     FAuroraViewReply SetTransform(const TSharedPtr<FJsonObject>& Params);
     FAuroraViewReply RestoreTransform();
     FAuroraViewReply SelectActor(const TSharedPtr<FJsonObject>& Params);

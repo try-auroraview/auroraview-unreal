@@ -1,5 +1,6 @@
 #include "AuroraViewNativeShowcase.h"
 #include "AuroraViewWorkspace.h"
+#include "AuroraViewNativeDrag.h"
 #include "ContentBrowserModule.h"
 #include "Dom/JsonObject.h"
 #include "Editor.h"
@@ -424,7 +425,10 @@ TSharedRef<SWidget> FAuroraViewNativeShowcase::MakeWorkspace(const TSharedRef<SD
     OutlinerHost = OutlinerContainer;
     OutlinerHosts.Add(OutlinerContainer);
     RebuildOutliner(EditorWorld());
-    return SNew(SAuroraViewWorkspace).OwnerTab(Tab).Inspector(Browser).Assets(AssetWidget).Outliner(OutlinerContainer);
+    const auto Inspector = SNew(SVerticalBox)
+        + SVerticalBox::Slot().AutoHeight() [ MakeAuroraViewNativeDragSurface(AsShared()) ]
+        + SVerticalBox::Slot().FillHeight(1) [ Browser ];
+    return SNew(SAuroraViewWorkspace).OwnerTab(Tab).Inspector(Inspector).Assets(AssetWidget).Outliner(OutlinerContainer);
 }
 void FAuroraViewNativeShowcase::RebuildOutliner(UWorld* Current)
 {

@@ -1,8 +1,9 @@
 # Native showcase follow-up candidate
 
-This is cumulative stage 2, layered onto public commit `934fa5301a3e78ca0e41bf3890b0cc991c239e11`
-(tree `2ad6955855e990f3d8120fec641ec38954743972`). The original feature source was
-prepared from the exact runtime tree of
+This is cumulative stage 3 of the native follow-up series, layered onto public
+commit `934fa5301a3e78ca0e41bf3890b0cc991c239e11` (tree
+`2ad6955855e990f3d8120fec641ec38954743972`). The reviewed feature source was
+originally prepared from the exact runtime tree of
 [6eb8fbd](https://github.com/try-auroraview/auroraview-unreal/commit/6eb8fbd44af951a8812a6df473e83d7a2adc96c5)
 (tree `829863926e4a02142058ecb8f2f32b1d21a6bbff`). The baseline native build result
 does **not** validate these changes. UHT/UBT/package and graphical Editor gates
@@ -88,31 +89,6 @@ timepoint. Mark unavailable implemented tests `blocked`; label missing code
    garbage collection and exit Editor. Assert no stale callback, orphan tab or
    browser; inspect the complete process exit log
 
-## Reviewed lifecycle repairs included in this stage
-
-Ownership is copied before factory/Slate callbacks and revalidated afterward by
-mapped session, browser, native browser, live epoch and tab identity. Removal
-retires the map entry before destruction; shutdown snapshots and retires owners
-before callbacks. Live presentation epochs are module-unique and zero after
-retirement. A newer/replacement presentation cannot satisfy an older open request.
-
-Failed-spawn error tabs receive close callbacks before browser construction.
-Retry uses only the still-owned tab; a manually closed error tab is retired even
-if a caller retains it strongly. Close/Remove/shutdown also own browserless tabs.
-
-Authored native Automation includes `AuroraView.Editor.DockFactoryReentrancy`
-(map growth, self-close, remove/replace, close/reopen) and
-`AuroraView.Editor.FailedDockRecovery` (retry and retained manually closed error
-tabs). These tests, `DockedLifecycle`, and the strict-type `BridgeRoundTrip` have
-not been compiled or executed for this stage. Stage 1 introduced five
-static dock/source regression checks; the cumulative stage 2 suite below
-adds typed scope and retained-Outliner guards. Static markers are not compiler or native behavioral evidence.
-
-Cross-window CEF focus and Chinese IME remain blocked/unverified. Installed
-source inspection found stale activation/IME-parent-cache risks; no engine-private
-patch or unsupported SetParentWindow-only repair is introduced.
-
-
 ## Stage 2: typed native inspector
 
 The showcase replaces the two stage-1 placeholder panels with the engine's
@@ -164,30 +140,213 @@ the observer retires/rebuilds the widget for the next idle Editor world. It is
 released before Editor services teardown. Creating the Outliner does not claim
 its later-tick population/selection has already completed.
 
-## Stage 2 boundary and retained-Outliner repair
+## Stage 3: genuine native drag surfaces and fixture
 
-The reviewed shared host and its native interaction policy are carried intact.
-That includes dormant complete-selection drag-admission helpers and feedback;
-no custom Slate drag surface calls them in this stage. The native AssetPicker's
-own drag capability remains enabled. The actual custom source/drop target,
-fixture mutations, acceptance registry and runner arrive in stage 3.
+The inspector's surrounding Slate strip has real drag sources. Pointer movement
+enters `OnDragDetected`, then returns a native `FReply::BeginDragDrop` with actual
+weak selected actors or actual inspected asset data. An HTML button or delayed
+RPC never pretends to produce that FReply. Native AssetPicker drag is also left
+enabled. The native inbound drop target accepts supported direct actor/asset
+operations and inspects their real payloads. A `started` event proves a native
+operation began, **not** that the destination accepted it. A target-accepted event
+proves only this inspector consumed that payload. Viewport placement or Outliner
+reparenting still needs actual world/attachment observations and Undo assertions.
+Composite/folder payloads are explicitly gated until their native child operation
+contract is implemented and verified; they must not be described as passed.
 
-Generation zero or Stop clears every retained Outliner child, including later
-refreshes. A new native actor browser is allowed only for a matching live,
-nonzero presentation generation and current idle Editor world. Generation/world
-and container ownership are rechecked across native construction and installation.
-The complete reviewed policy header is tested by 28 executable standalone C++
-cases, including closed/mismatched-generation retirement. The actual retained
-native-container regression requires the guarded fixture added in stage 3 and
-is not present or claimed as run here.
+The project scaffold under `examples/AuroraViewNativeFixture` is content-free.
+It references the installed engine's built-in Cube by path; it redistributes no
+engine asset, header, binary or generated file. Prepare a new disposable copy,
+copy the newly built plugin package into Plugins/AuroraView, create a new empty
+map, and save it as `/Game/AuroraViewAcceptance/<SavedMap>` inside that disposable project. Never point this at a user map. Supply `-FixtureMap /Game/AuroraViewAcceptance/<SavedMap>` to the runner; it passes both the explicit startup map and `-AuroraViewFixtureMap=<package>`. The native fixture guard checks that exact package is loaded before any mutation. Installed Editor startup behavior still requires a native check.
 
-Pristine forms follow actual native single selection and same-actor updates.
-Dirty drafts expose keep/discard/reload choices; deselection, multiselection or
-truncation disables mutations. All reviewed weak actor/root/world/session
-revalidation and nested-mutation guards are retained. Native callbacks may
-interrupt a change; an interrupted result never promises an unobserved rollback.
+Fixture creation requires BOTH exact project name `AuroraViewNativeFixture` and
+explicit Editor flags `-AuroraViewAllowFixtureMutations` and `-AuroraViewFixtureMap=<package>`. It refuses a different loaded map, PIE and
+engine-owned maps. Three tagged real static-mesh actors are created transactionally.
+An existing fixture is reused only after unique A/B/ground role tags, native static-mesh actor type and the installed Cube mesh match. Results use deterministic role order. Duplicates, substitutions and partial fixtures fail closed; existing transforms are preserved.
+Nothing is saved automatically, and the fixture is not silently recreated over
+modified content. Start again with a new empty map for a clean acceptance run.
 
-The source-safe suite adds 12 mock-DOM inspector tests, 28 production policy
-cases and eight static source guards. None compiles or executes Unreal. All
-feature UHT/UBT/package, typed mutation, real selection/push and native Outliner
-retirement gates remain `not_run` for this exact stage.
+Run `AuroraView.Showcase.CreateFixture`, frame the three real actors in the
+viewport, switch the viewport to Unlit for consistent geometry visibility, and
+open `AuroraView.Showcase`. The initial scene is intentionally simple
+and reproducible, with visible cube A, cube B and a floor. For a native outbound
+asset case enable Show Engine Content in the native picker's options and select
+the installed Cube in /Engine/BasicShapes; for actor
+reparenting use A and B. Undo each placement/reparent before the next case.
+
+`AuroraView.Showcase.FixtureTransform` validates actual native object state before
+and after a typed edit, stale conflict, own restore, native Undo and native Redo.
+It requires the same explicit fixture guard.
+`AuroraView.Showcase.FixtureBridgeRoundTrip` uses an independent actual docked CEF
+session to call typed snapshot/edit/restore handlers, compare the native UObject,
+and verify real Core host-push events. These tests are not a browser simulation.
+`scripts/run_native_acceptance.ps1`
+provides a graphical Automation entry point for the prepared isolated project.
+It does not build/install the plugin or replace manual native drag media proof.
+
+## Evidence contract
+
+`acceptance/cases.json` supplies repeatable steps and expected native states for
+every case. It starts with no measured actuals and no media. Use
+`python scripts/native_evidence.py --seed <new evidence.json>` after freezing the
+source. Record actual source commit/tree, engine version/BuildId, build/DLL hash,
+Automation report, per-case real observations, assertions, and exact UTC/host/video
+times in the run copy. Keep file references relative to the evidence directory.
+
+Each screenshot/video entry contains kind, file, SHA-256, host_time_s and, for a
+video, video_time_s. The recording header carries started_utc and
+host_seconds_at_video_zero. Show actual Editor chrome, the native cursor/payload,
+the destination, and the resulting host state; keep failures and retries visible.
+Do not manufacture frames, animate a stand-in, infer a drop from a browser event,
+or label unimplemented features not_run. Source candidates awaiting native
+execution are pending or blocked, not native passes.
+
+`python scripts/native_evidence.py --validate <evidence.json>` rejects a claimed
+pass without source/engine/build identity, actual native assertions, timestamps
+and hashed existing media. `--require-complete` additionally requires every
+required case to pass. Deliberately unimplemented optional extensions remain
+visible. This validator checks an evidence record; it cannot prove that an honest
+native observation was made. Independent review of actual logs/media is required.
+
+The verified private sidebar toggle is now implemented in source. It affects all
+eligible tabs or restores remembered tabs according to native manager state.
+At least one tab stays; a previously sidebared tab moved to a different manager
+may be restored in its new stack. Native
+sidebar and layout behavior remain pending actual engine validation. See the
+[public API audit](native-api-contracts.md) for exact-version caveats.
+
+## Failed-open recovery and remaining native parent gate
+
+Failed spawns keep a managed native error tab. OpenDocked retries browser
+construction in that same still-owned open tab; a manually closed error tab is retired even while another caller holds a strong reference. Reopening then creates a new live tab; Close/Remove/shutdown retire it even if no browser
+was ever created. `AuroraView.Editor.FailedDockRecovery` uses an explicit
+test-only pre-browser failure seam, then verifies an actual CEF reply after retry
+and removal of another failed tab. Rebinding a closed registration recreates the
+spawner display name, and every successful/error tab receives its current title.
+
+Actual Slate ownership does not by itself prove CEF native dialog/focus/IME
+parenting after docking into a different native window. That source/runtime gate
+is explicitly pending; no unsupported native-parenting behavior is claimed.
+
+Initial subscription reads the current primary Content Browser selection. Later
+snapshots name the actual asset observation source (picker, primary browser event,
+initial primary snapshot, or native drop) and its host timestamp. A submitted
+reveal is not promoted to success by reusing an earlier picker observation.
+
+An extracted source archive has no local git identity. The evidence seed leaves
+commit/tree/dirty unrecorded in that case rather than inheriting an unrelated
+parent project's git HEAD. Supply them only from independently verified delivery/run inputs with an exact source-file manifest, hashed archive and hashed receipt. The validator verifies the archive contents and unpacked files against that manifest. A parent project's commit is not this plugin source identity.
+
+## Cross-window input is a blocked acceptance gate
+
+An installed UE 5.7 source audit found a concrete risk, not a reproduced runtime
+failure: SWebBrowserView can update its cached native parent on paint without
+rebinding old/new window activation delegates, and the IME context can continue
+using an old still-live cached Slate/native window. Public SetParentWindow does
+not demonstrate a complete repair. This candidate does not patch engine-private
+CEF/Slate state or claim that a relocation callback fixes it.
+
+Same-window native docking remains the implemented path. Cross-window focus,
+Chinese IME and lifecycle are visibly marked unverified in the inspector and
+blocked in the acceptance seed. The dedicated case keeps two windows alive,
+tests composition/candidates/commit/cancel and activation, then closes the old
+window and repeats the move. Use an already configured input method; unavailable
+IME is a blocker, not a passing test. Retain all native behavior and media.
+
+
+## Independent-review repairs (source v2)
+
+The original source candidate and delivery remain immutable. These repairs are
+additional source changes, not a native rerun. Public PR1 at `934fa530` retains
+its separate corrected-source UAT/UBT/wrapper and complete-package pass, the
+first graphical baseline smoke’s mixed results, and pending corrected strict-type
+CEF rerun; none is evidence that this showcase tree was built or run. Publication
+must three-way layer the feature series onto that current public base and preserve
+its README/acceptance build evidence. Do not replace the public PR1 tree wholesale.
+
+- Dock ownership is copied before public factory/Slate callback boundaries and
+  revalidated afterward by mapped session, browser, native browser, live epoch and
+  tab identity. Removal detaches the map entry before destruction. Stop snapshots
+  the owners before callbacks. The public live presentation epoch is module-unique
+  across removed/recreated IDs and zero after retirement
+- Error-tab close callbacks are installed before any failing browser path. Native
+  Automation now includes retained manually closed error tabs and content factories
+  that grow the session map, close themselves, or remove/reopen their own ID
+- Pristine transform forms follow actual single native selection and same-actor
+  host updates. Dirty drafts keep their stale expected-transform guard and expose
+  keep/discard/reload choices. Deselect/multiselect disables mutation; changed
+  world or browser scope invalidates the old draft
+- Native transform/selection callbacks revalidate weak actor/root/world/session
+  state before subsequent dereferences. Interrupted mutation reports actual-state
+  uncertainty rather than promising rollback; native Undo remains available where
+  the transaction survives. Nested mutations are rejected. A destruction/reentrancy
+  reproduction against installed headers/runtime is still required
+- Retained Outliners are cleared and generation/stop gated. Actor history evicts
+  unselected entries when full; snapshots report actual selection count and
+  truncation. A truncated selection cannot enable single-actor form edits
+- Evidence validation v2 is registry-pinned and fail-closed. See
+  [the evidence v2 contract](native-evidence-v2.md). No synthetic validator fixture
+  is native evidence, and no screenshot/video is supplied by this repair
+
+Native gates remain pending for this exact candidate: UHT/UBT clean packaging,
+installed public API compatibility, CEF bridge and strict-type smoke, all native
+Automation including new regressions, sidebar/private panel transfer semantics,
+fixture map startup/roles and actor callbacks, docking/drag/Undo, normal shutdown,
+resource cleanup, and cross-window focus/Chinese IME. No engine-private API or
+unverified cross-window fix was invented.
+
+
+## v3 delta: complete actor-drag admission and retired Outliners
+
+Native outbound actor dragging no longer uses the inspector's 128-entry sample.
+It reads every native selection slot, including null entries, and admits only an
+entire valid, non-destroying, same-idle-world actor set within the explicit 128-actor
+capacity. Any invalid/non-actor/foreign-world entry or overflow rejects the whole
+operation. Feedback names the rejection, full selected/eligible counts and limit;
+no accepted prefix is passed to native reparenting.
+
+Preparation snapshots the owned live presentation epoch, world, every selected
+identity and weak actor reference. It revalidates after RecordNativeDrag's scope
+refresh and again after native drag-operation construction, immediately before
+BeginDragDrop. The final feedback write has no scope refresh or widget teardown.
+Changing selection, world, readiness or epoch, or invalidating an original weak
+actor, rejects the whole operation. Destination acceptance and native Undo still
+need their own observed native gates.
+
+Generation zero clears every retained native Outliner child. Neither later ticks
+nor a different idle world can create an actor browser until the host owns a live
+nonzero generation. Rebuild also rechecks generation/world across native child
+creation and content installation.
+
+`NativeInteractionGuards.h` is the production, engine-independent admission policy;
+28 standalone C++ regression scenarios execute under `scripts/check.sh`. These are
+policy tests, not native execution. New authored Automation
+`AuroraView.Showcase.NativeInteractionGuards` creates 129 temporary native actors
+only inside the guarded isolated fixture, tests the 128/129 boundary, weak-payload
+invalidation and callback-boundary changes, then destroys the temporary actors.
+It holds actual SBox containers strongly across close/remove and checks their null
+children plus an unchanged native actor-browser construction count. No native
+Automation or new feature build has been run for this tree.
+
+Public API references: [USelection::Num](https://dev.epicgames.com/documentation/unreal-engine/API/Editor/UnrealEd/USelection/Num)
+and [USelection](https://dev.epicgames.com/documentation/unreal-engine/API/Editor/UnrealEd/USelection)
+document indexed selection access and possible null slots. The available public
+pages resolved to 5.8; the installed UE 5.7.4 `Num() const` and `GetSelectedObject(const int32) const`
+signatures were subsequently checked during publication preparation. Other
+installed API compatibility and all native behavior remain verification gates. No engine-private API is used.
+
+## Publication-stage verification scope
+
+The cumulative product code is byte-identical to reviewed source-v3 commit
+`897823ecd3bdc87b7867274f5c1643bd3d2065e7`; README and baseline acceptance evidence
+are reconciled onto public `934fa530`. The earlier in-repository
+`evidence/native-showcase-source-checks.log` is historical source-only evidence,
+not a claim that this cumulative tree or any native feature was built. Run
+`scripts/check.sh` for the current suite: 9 source invariants, 4 preflight cases,
+25 evidence cases, 11 static source guards, 11 mailbox cases, 28 production
+interaction-policy cases, 25 Core Node tests and 12 mock-DOM inspector tests.
+
+Every new feature UHT/UBT/package and native Automation/graphical gate remains
+`not_run`. The historical baseline build/package passes, mixed first graphical smoke
+results and pending corrected strict-type CEF rerun are recorded separately in README and the baseline verification matrix.

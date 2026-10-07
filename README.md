@@ -1,11 +1,11 @@
 # AuroraView Unreal Editor source candidate
 
-**Native follow-up stage 2: new UHT/UBT/package and Editor runtime gates are `not_run`.**
+**Native follow-up stage 3: new UHT/UBT/package and Editor runtime gates are `not_run`.**
 
-This cumulative stage adds typed selection/push, the Core inspector and real
-native Assets/Outliner widgets, with all reviewed mutation and generation-zero
-retirement repairs. Shared drag-admission helpers are included unchanged; custom
-Slate drag/drop surfaces and guarded fixtures remain for stage 3.
+This cumulative stage adds actual Slate drag/drop surfaces and guarded native
+fixtures/evidence on top of stages 1 and 2. Actor drags admit the whole valid
+selection or reject it, with an explicit 128-actor capacity. Native destination
+acceptance, Undo and all new native build/runtime gates remain unverified.
 See [this stage’s native scope and acceptance](docs/native-showcase.md).
 
 **Historical baseline evidence: UE 5.7.4 / Win64 build/package checks passed at `6eb8fbd` and `934fa530`; the first real graphical smoke at `6eb8fbd` had mixed results.**

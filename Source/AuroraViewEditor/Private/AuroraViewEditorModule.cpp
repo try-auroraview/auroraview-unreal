@@ -1,6 +1,7 @@
 #include "AuroraViewEditorModule.h"
 #include "AuroraViewEndpoint.h"
 #include "AuroraViewNativeShowcase.h"
+#include "AuroraViewFixture.h"
 #include "Containers/Ticker.h"
 #include "Dom/JsonObject.h"
 #include "Framework/Application/SlateApplication.h"
@@ -286,6 +287,7 @@ struct FAuroraViewEditorModule::FImpl
     FDelegateHandle ExitHandle;
     IConsoleObject* DemoCommand = nullptr;
     IConsoleObject* DockCommand = nullptr;
+    IConsoleObject* FixtureCommand = nullptr;
     TSharedPtr<FAuroraViewNativeShowcase> Showcase;
     bool bStopping = false;
     uint64 NextPresentationGeneration = 0;
@@ -365,6 +367,15 @@ void FAuroraViewEditorModule::StartupModule()
     if (!ReadAsset(Impl->Root, TEXT("Resources/native_showcase.html"), DockHtml)
         || !Impl->Showcase->Start(DockHtml, DockError))
         UE_LOG(LogAuroraView, Error, TEXT("Native showcase registration failed: %s"), *DockError);
+    Impl->FixtureCommand = IConsoleManager::Get().RegisterConsoleCommand(
+        TEXT("AuroraView.Showcase.CreateFixture"), TEXT("Create guarded native actors in the disposable acceptance project only"),
+        FConsoleCommandDelegate::CreateLambda([]()
+        {
+            FString Error;
+            TArray<TWeakObjectPtr<AActor>> Actors;
+            if (!AuroraViewFixture::Create(Actors, Error)) UE_LOG(LogAuroraView, Error, TEXT("%s"), *Error);
+            else UE_LOG(LogAuroraView, Display, TEXT("Native fixture contains %d actual actors"), Actors.Num());
+        }), ECVF_Default);
     Impl->DockCommand = IConsoleManager::Get().RegisterConsoleCommand(
         TEXT("AuroraView.Showcase"), TEXT("Open the native docked acceptance workspace"),
         FConsoleCommandDelegate::CreateLambda([this, DockId]()
@@ -378,6 +389,7 @@ void FAuroraViewEditorModule::ShutdownModule()
 {
     check(IsInGameThread());
     if (!Impl) return;
+    if (Impl->FixtureCommand) IConsoleManager::Get().UnregisterConsoleObject(Impl->FixtureCommand, false);
     if (Impl->DockCommand) IConsoleManager::Get().UnregisterConsoleObject(Impl->DockCommand, false);
     if (Impl->DemoCommand) IConsoleManager::Get().UnregisterConsoleObject(Impl->DemoCommand, false);
     FCoreDelegates::OnEnginePreExit.Remove(Impl->ExitHandle);

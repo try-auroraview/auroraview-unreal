@@ -1,0 +1,555 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "dock.lifecycle",
+      "stage": 1,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Run AuroraView.Editor.DockedLifecycle in graphical Editor",
+        "Observe actual A and B Slate tabs",
+        "Close A, reopen A, then remove both"
+      ],
+      "expected_host_state": {
+        "independent_tabs": 2,
+        "b_survives_a_close": true,
+        "a_reopen_new_generation": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": "AuroraView.Editor.DockedLifecycle",
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "dock.factory_reentrancy",
+      "stage": 1,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Run AuroraView.Editor.DockFactoryReentrancy in graphical Editor",
+        "Force 1024 map insertions from a content factory",
+        "Close, remove/replace, and close/reopen the factory-owned view",
+        "Observe retired tabs disappear and replacement/independent CEF sessions become ready"
+      ],
+      "expected_host_state": {
+        "map_growth_safe": true,
+        "retired_outer_open_rejected": true,
+        "no_orphan_tab_or_browser": true,
+        "replacement_and_independent_sessions_survive": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": "AuroraView.Editor.DockFactoryReentrancy",
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "dock.failed_spawn_recovery",
+      "stage": 1,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Run AuroraView.Editor.FailedDockRecovery",
+        "Observe the explicit native failed-spawn test seam error tab",
+        "Retry that same tab and verify real CEF echo",
+        "Remove another failed tab and assert no live registration",
+        "Close, re-register with a new title, reopen and inspect caption",
+        "Retain a strong reference to an error tab, request native close, reopen and compare actual tab identity"
+      ],
+      "expected_host_state": {
+        "failed_tab_owned": true,
+        "same_tab_retry_succeeds": true,
+        "failed_tab_remove_closes": true,
+        "new_registration_title_visible": true,
+        "manually_closed_retained_tab_not_reused": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": "AuroraView.Editor.FailedDockRecovery",
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": "Intentional test seam covers pre-browser failure recovery; actual missing assets/backend failure should also be retained if encountered."
+    },
+    {
+      "id": "dock.snap_and_undock",
+      "stage": 1,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Open AuroraView.Showcase",
+        "Dock main workspace beside viewport",
+        "Undock, resize, redock, and run a host call after each move"
+      ],
+      "expected_host_state": {
+        "same_browser_generation": true,
+        "native_slate_dock": true,
+        "rpc_after_each_move": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "dock.cross_window_focus_ime",
+      "stage": 1,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "blocked",
+      "steps": [
+        "Open two separate live native Editor windows; keep both alive",
+        "Move the same AuroraView dock from window A to window B",
+        "Type Latin text and use an already configured Chinese IME to compose, select candidates, commit and cancel",
+        "Alternate activation between both windows and verify focus belongs to the current host",
+        "Close old window A while using the view in B; repeat reverse relocation and close/reopen",
+        "Record actual composition/focus behavior and native parent/lifecycle observations; do not install or reconfigure input methods without authorization"
+      ],
+      "expected_host_state": {
+        "current_window_receives_focus": true,
+        "chinese_ime_composition_uses_current_window": true,
+        "old_window_close_does_not_break_current_view": true,
+        "same_window_docking_still_works": true,
+        "no_stale_activation_callback": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": "Installed UE5.7 source audit found cached activation/IME parent risks. This is not a reproduced runtime failure and SetParentWindow alone is not a verified fix."
+    },
+    {
+      "id": "dock.private_layout_restore",
+      "stage": 1,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Rearrange private panels and split sizes",
+        "Save layout and close workspace",
+        "Reopen workspace",
+        "Restart Editor and explicitly invoke AuroraView.Showcase"
+      ],
+      "expected_host_state": {
+        "panel_topology_restored": true,
+        "split_sizes_restored": true,
+        "global_layout_callback_replaced": false
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "dock.native_sidebar",
+      "stage": 1,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Record actual sidebar eligibility and stack membership",
+        "Use Toggle eligible tabs in sidebars",
+        "Observe at least one tab remains docked",
+        "Open/close a native drawer without closing the browser",
+        "Restore eligible remembered tabs",
+        "Close/reopen a saved sidebar layout and toggle according to actual restored state"
+      ],
+      "expected_host_state": {
+        "eligible_tabs_move": true,
+        "at_least_one_tab_stays": true,
+        "drawer_close_preserves_session": true,
+        "same_browser_generation": true,
+        "rpc_after_restore": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "dock.global_startup_auto_reopen",
+      "stage": 1,
+      "required": false,
+      "implementation": "unimplemented",
+      "status": "unimplemented",
+      "steps": [
+        "Close and restart Editor with workspace open",
+        "Observe automatic global layout reconstruction without a command"
+      ],
+      "expected_host_state": {
+        "auto_reopened": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "inspector.actor_selection",
+      "stage": 2,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Select fixture A in native Outliner",
+        "Observe opaque ID and transform in Core inspector",
+        "Select B in viewport",
+        "Select previously observed A from inspector",
+        "With an untouched form, switch native A-to-B selection while A remains in history",
+        "With a dirty form, switch native selection and explicitly keep, discard or reload",
+        "Deselect, multi-select and change world/generation; inspect form and disabled controls"
+      ],
+      "expected_host_state": {
+        "editor_and_inspector_selection_match": true,
+        "host_feedback_game_thread": true,
+        "opaque_session_world_ids": true,
+        "pristine_form_follows_native_selection": true,
+        "dirty_form_requires_explicit_choice": true,
+        "multi_or_truncated_selection_cannot_edit": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "inspector.asset_selection",
+      "stage": 2,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Select a real asset in native Assets",
+        "Observe actual asset in inspector",
+        "Reveal in primary Content Browser",
+        "Wait for native primary-browser selection observation"
+      ],
+      "expected_host_state": {
+        "picker_asset_observed": true,
+        "reveal_initial_result": "submitted",
+        "primary_browser_observed_after_deferred_sync": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "inspector.transform_round_trip",
+      "stage": 2,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Run guarded fixture transform test",
+        "Edit transform from actual inspector form",
+        "Observe real actor and Details panel",
+        "Restore, native Undo, native Redo"
+      ],
+      "expected_host_state": {
+        "actual_transform_matches": true,
+        "stale_edit_rejected": true,
+        "restore_matches_before": true,
+        "native_undo_redo": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": "AuroraView.Showcase.FixtureTransform; AuroraView.Showcase.FixtureBridgeRoundTrip",
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "inspector.scope_and_push",
+      "stage": 2,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Run typed guard test",
+        "Close/reopen showcase",
+        "Attempt old actor ID",
+        "Change Editor world",
+        "Observe fresh scope and selection without stale callbacks"
+      ],
+      "expected_host_state": {
+        "old_ids_rejected": true,
+        "ready_generation_scoped_events": true,
+        "closed_view_has_no_push": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": "AuroraView.Editor.TypedInspectorGuards",
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "drag.asset_in",
+      "stage": 3,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Drag actual native AssetPicker or Content Browser asset to native drop target",
+        "Observe inspector asset and native accepted event"
+      ],
+      "expected_host_state": {
+        "native_payload_type": "FAssetDragDropOp",
+        "actual_asset_inspected": true,
+        "html_drag_used": false
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "drag.actor_in",
+      "stage": 3,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Drag fixture actor from native Outliner to native drop target",
+        "Observe actual actor in inspector",
+        "Record whether source is direct or composite payload"
+      ],
+      "expected_host_state": {
+        "native_actor_payload": true,
+        "actual_actor_inspected": true,
+        "html_drag_used": false
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "drag.asset_out",
+      "stage": 3,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Choose built-in Cube in native Assets",
+        "Record world actor count",
+        "Drag native inspected-asset strip into viewport",
+        "Observe new actor, static mesh and actual transform",
+        "Undo native placement"
+      ],
+      "expected_host_state": {
+        "native_drag_started": true,
+        "viewport_actor_count_delta": 1,
+        "new_actor_uses_selected_mesh": true,
+        "undo_restores_world": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "drag.actor_out",
+      "stage": 3,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Select fixture A",
+        "Drag native selected-actor strip onto fixture B in Outliner",
+        "Observe native parent attachment",
+        "Undo native reparenting"
+      ],
+      "expected_host_state": {
+        "native_actor_drag_started": true,
+        "native_outliner_accepted": true,
+        "actual_parent_changed": true,
+        "undo_restores_parent": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "drag.composite_payloads",
+      "stage": 3,
+      "required": false,
+      "implementation": "unimplemented",
+      "status": "unimplemented",
+      "steps": [
+        "Drag a composite actor/folder source into native target"
+      ],
+      "expected_host_state": {
+        "native_composite_child_extracted": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "lifecycle.gc_shutdown",
+      "stage": 3,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Run baseline and docked tests",
+        "Repeat open/close with GC between active calls",
+        "Close Editor normally and inspect complete process log"
+      ],
+      "expected_host_state": {
+        "no_stale_callbacks": true,
+        "no_orphan_browser_or_tab": true,
+        "normal_exit": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "inspector.material_light_parameters",
+      "stage": 2,
+      "required": false,
+      "implementation": "unimplemented",
+      "status": "unimplemented",
+      "steps": [
+        "Edit material/light parameters from typed inspector"
+      ],
+      "expected_host_state": {
+        "typed_parameter_supported": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "drag.html_origin_native",
+      "stage": 3,
+      "required": false,
+      "implementation": "unimplemented",
+      "status": "unimplemented",
+      "steps": [
+        "Start an HTML drag that becomes a native viewport payload"
+      ],
+      "expected_host_state": {
+        "html_to_native_drag_handoff": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": null,
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": ""
+    },
+    {
+      "id": "lifecycle.actor_drag_and_retained_outliner",
+      "stage": 3,
+      "required": true,
+      "implementation": "source_candidate",
+      "status": "pending",
+      "steps": [
+        "Run guarded AuroraView.Showcase.NativeInteractionGuards in the isolated saved fixture map",
+        "Select 128 actual actors, then 129; require exact admission or whole-set rejection",
+        "Invalidate captured weak identity and change selection/generation across native feedback refresh; require no operation",
+        "Hold native Outliner containers strongly while closing/removing the view; repeat scope refresh and require empty children with no new actor-browser construction",
+        "Separately perform a small native Outliner reparenting drag and Undo; admission alone is not destination acceptance"
+      ],
+      "expected_host_state": {
+        "selection_128_admitted_whole": true,
+        "selection_129_rejected_whole": true,
+        "invalidated_payload_rejected": true,
+        "changed_selection_or_generation_rejected": true,
+        "retained_closed_outliner_empty": true,
+        "retained_removed_outliner_empty": true,
+        "closed_generation_has_no_actor_browser_build": true
+      },
+      "actual_host_state": null,
+      "assertions": [],
+      "media": [],
+      "automation": "AuroraView.Showcase.NativeInteractionGuards",
+      "started_utc": null,
+      "finished_utc": null,
+      "host_time_s": null,
+      "notes": "Pure-policy cases also cover foreign-world, non-actor, destroying, invalid and changed-world sets; only actual installed native execution can pass this case."
+    }
+  ]
+}

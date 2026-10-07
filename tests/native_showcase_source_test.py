@@ -17,6 +17,20 @@ class NativeSourceTests(unittest.TestCase):
         src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewWorkspace.cpp').read_text()
         self.assertIn('NewTabManager',src);self.assertIn('FLayoutSaveRestore::SaveToConfig',src)
         self.assertNotIn('InstanceId',src);self.assertNotIn('GEditorLayoutIni',src)
+    def test_no_html_native_drag_simulation(self):
+        html=(ROOT/'Resources/native_showcase.html').read_text()
+        for marker in ('dataTransfer','dragstart','eval(','new Function('):self.assertNotIn(marker,html)
+        src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewNativeDrag.cpp').read_text()
+        for marker in ('OnDragDetected','BeginDragDrop','FActorDragDropGraphEdOp::New','FAssetDragDropOp::New','OnDrop'):
+            self.assertIn(marker,src)
+    def test_guarded_fixture_and_weak_scope(self):
+        fixture=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewFixture.cpp').read_text()
+        for marker in ('AuroraViewNativeFixture','AuroraViewAllowFixtureMutations','PlayWorld','/Engine/'):
+            self.assertIn(marker,fixture)
+        src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewNativeShowcase.cpp').read_text()
+        for marker in ('FGuid::NewGuid','ActorsById.Reset','FScopedTransaction','CONFLICT','Transaction.Cancel','selectionMatched'):
+            self.assertIn(marker,src)
+        for marker in ('LoadObject<','FindObject<','GetPathName()'):self.assertNotIn(marker,src)
     def test_package_preserves_bridge_assets(self):
         config=(ROOT/'Config/FilterPlugin.ini').read_text()
         self.assertIn('/ThirdParty/AuroraViewCore/...',config)
@@ -40,19 +54,38 @@ class NativeSourceTests(unittest.TestCase):
         native=(ROOT/'Source/AuroraViewEditor/Private/Tests/AuroraViewDockRecoveryTests.cpp').read_text()
         self.assertIn('RetainedClosedTab->RequestCloseTab()',native)
         self.assertIn('NewTab != State->RetainedClosedTab',native)
-    def test_typed_scope_and_callback_guards(self):
+    def test_fixture_roles_map_and_mutation_revalidation(self):
+        fixture=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewFixture.cpp').read_text()
+        for marker in ('AuroraViewFixtureMap=', 'RoleCount != 1', 'Roles[Role].IsValid()', 'GetStaticMesh() != Cube', 'OutActors = Roles'):
+            self.assertIn(marker,fixture)
+        run=(ROOT/'scripts/run_native_acceptance.ps1').read_text()
+        self.assertIn('$Project, $FixtureMap',run)
         src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewNativeShowcase.cpp').read_text()
-        for marker in ('FGuid::NewGuid','ActorsById.Reset','FScopedTransaction','CONFLICT','Transaction.Cancel','selectionMatched', 'TWeakObjectPtr<USceneComponent>', 'if (!Current()) return Interrupted()', 'TGuardValue<bool> MutationGuard', 'selectedActorCount', 'selectionTruncated', 'GetOnAssetSelectionChanged().Remove(AssetSelectionHandle)'):
+        for marker in ('TWeakObjectPtr<USceneComponent>', 'if (!Current()) return Interrupted()', 'TGuardValue<bool> MutationGuard', 'OutlinerHosts', 'IsInteractionCurrent(WidgetGeneration)', 'selectedActorCount', 'selectionTruncated'):
             self.assertIn(marker,src)
-        for marker in ('LoadObject<','FindObject<','GetPathName()'): self.assertNotIn(marker,src)
-    def test_retired_outliner_lifecycle_in_production_source(self):
+        self.assertNotIn('original value restored',src)
+    def test_actor_drag_admission_is_complete_and_revalidated(self):
+        src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewNativeShowcase.cpp').read_text()
+        capture=src[src.index('FAuroraViewActorDragCapture FAuroraViewNativeShowcase::CaptureCompleteActorSelection'):src.index('AuroraView::ActorDragDecision FAuroraViewNativeShowcase::CheckActorDrag')]
+        for marker in ('Selection->Num()', 'Selection->GetSelectedObject(Index)', 'Capture.Admission.Selection.push_back(Entry)'):
+            self.assertIn(marker,capture)
+        self.assertNotIn('GetSelectedActors() const',capture)
+        self.assertNotIn('continue;',capture)
+        self.assertNotIn('break;',capture)
+        drag=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewNativeDrag.cpp').read_text()
+        actor=drag[drag.index('        if (bActors)'):drag.index('        const auto Assets')]
+        self.assertNotIn('GetSelectedActors()',actor)
+        self.assertLess(actor.index('PrepareActorDrag'),actor.index('FActorDragDropGraphEdOp::New'))
+        self.assertLess(actor.index('FActorDragDropGraphEdOp::New'),actor.index('FinalizeActorDrag'))
+        self.assertLess(actor.index('FinalizeActorDrag'),actor.index('BeginDragDrop(Operation)'))
+        record=src[src.index('void FAuroraViewNativeShowcase::RecordActorDragDecision'):src.index('bool FAuroraViewNativeShowcase::PrepareActorDrag')]
+        self.assertNotIn('RefreshScope();',record)
+    def test_retired_outliners_never_rebuild(self):
         src=(ROOT/'Source/AuroraViewEditor/Private/AuroraViewNativeShowcase.cpp').read_text()
         refresh=src[src.index('void FAuroraViewNativeShowcase::RefreshScope'):src.index('FString FAuroraViewNativeShowcase::IdFor')]
         self.assertIn('else ClearOutliners()',refresh)
         self.assertIn('if (!Module.GetGeneration(Id) || bStopped) ClearOutliners()',refresh)
-        clear=src[src.index('void FAuroraViewNativeShowcase::ClearOutliners'):src.index('void FAuroraViewNativeShowcase::RefreshScope')]
-        self.assertIn('const auto Containers = OutlinerHosts',clear)
-        rebuild=src[src.index('void FAuroraViewNativeShowcase::RebuildOutliner'):src.index('FAuroraViewReply FAuroraViewNativeShowcase::SelectActor')]
-        self.assertEqual(rebuild.count('CanBuildNativeOutliner'),4)
-        self.assertIn('OutlinerHost.Pin() != Container',rebuild)
+        native=(ROOT/'Source/AuroraViewEditor/Private/Tests/AuroraViewNativeInteractionTests.cpp').read_text()
+        for marker in ('RetainedClosed', 'RetainedRemoved', 'SetActorDragFeedbackForTesting', 'GetOutlinerBuildCountForTesting', 'GetChildAt(0) == SNullWidget::NullWidget'):
+            self.assertIn(marker,native)
 if __name__=='__main__':unittest.main()

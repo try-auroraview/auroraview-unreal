@@ -50,7 +50,7 @@ Future done callbacks run on the completing thread and must remain nonblocking. 
 | `auroraview.view.show/hide/close/remove` | `id`; lifecycle operations |
 | `auroraview.host.shutdown` | Graceful owned-host process exit after flushing the response |
 
-Object tools address already-loaded full paths; they do not silently load arbitrary objects. Function input names are exact reflected names, all required inputs must be supplied, and unknown arguments fail before invocation. Latent functions require a project tool with explicit asynchronous completion ownership. Native tools execute on GameThread and must not block. Project-specific C++ tools register with `FAuroraViewRuntimeModule::RegisterTool`; per-view `BindCall` remains supported.
+Object addresses resolve already-loaded full paths. Property and function arguments use Unreal's typed JSON conversion and reference resolution rules. Function input names are exact reflected names, all required inputs must be supplied, and unknown arguments fail before invocation. Latent functions require a project tool with explicit asynchronous completion ownership. Native tools execute on GameThread and must not block. Project-specific C++ tools register with `FAuroraViewRuntimeModule::RegisterTool`; per-view `BindCall` remains supported.
 
 Editor Python can reach the available `unreal` Python API. UE4.18 has no PythonScriptPlugin, and packaged games do not provide Editor Python. External Python calls the common native tools or project/Blueprint UFunctions in both contexts. The plugin must be present in the target; it does not attach to unmodified games or bypass Editor-only API boundaries.
 

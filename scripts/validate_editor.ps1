@@ -62,14 +62,21 @@ function Get-ReportCounter {
 }
 
 function Assert-AutomationReport {
-    param([string]$Path)
+    param([string]$Path, [ValidateSet('4.18', '4.26', '5.5', '5.7', '5.8')][string]$EngineVersion)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "No Automation index.json was produced: $Path"
     }
     # AutomationController serializes FAutomatedTestPassResults and
     # FAutomatedTestResult to this flat tests array; process exit is insufficient.
     $report = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-    foreach ($counter in @('failed', 'notRun', 'inProcess')) {
+    $counters = @('failed', 'notRun')
+    # UE4's FAutomatedTestPassResults has no InProcess property. Every test
+    # must still be Success below, so unfinished legacy tests cannot pass.
+    # Require the counter in UE5, and validate it whenever UE4 provides one.
+    if ($EngineVersion -notin @('4.18', '4.26') -or $null -ne $report.PSObject.Properties['inProcess']) {
+        $counters += 'inProcess'
+    }
+    foreach ($counter in $counters) {
         if ((Get-ReportCounter $report $counter) -ne 0) {
             throw "Automation report '$counter' is not zero"
         }
@@ -83,12 +90,9 @@ function Assert-AutomationReport {
         'AuroraView.Editor.TypedInspectorGuards',
         'AuroraView.Showcase.FixtureBridgeRoundTrip',
         'AuroraView.Showcase.FixtureTransform',
-        'AuroraView.Showcase.NativeInteractionGuards'
+        'AuroraView.Showcase.NativeInteractionGuards',
+        'AuroraView.Runtime.ControlReflection'
     )
-    $runtimeTest = Join-Path $fixturePlugin 'Source/AuroraViewEditor/Private/Tests/AuroraViewRuntimeControlTests.cpp'
-    if (Test-Path -LiteralPath $runtimeTest -PathType Leaf) {
-        $expected += 'AuroraView.Runtime.ControlReflection'
-    }
     $testsProperty = $report.PSObject.Properties['tests']
     if ($null -eq $testsProperty -or $null -eq $testsProperty.Value) {
         throw 'Automation report contains no tests'
@@ -271,7 +275,7 @@ try {
     Assert-PackageFiles $packagePath $buildReceipt.package.files_sha256
     Assert-PackageFiles $fixturePlugin $buildReceipt.package.files_sha256
     Invoke-FixtureEditor $renderingEditor $automationArguments 'automation'
-    $result.tests = @(Assert-AutomationReport (Join-Path $reportDirectory 'index.json'))
+    $result.tests = @(Assert-AutomationReport -Path (Join-Path $reportDirectory 'index.json') -EngineVersion $engineVersion)
     if ((Get-FileHash -LiteralPath $buildReceiptPath -Algorithm SHA256).Hash -ine $buildReceiptHash -or
         (Get-FileHash -LiteralPath (Join-Path $packagePath $dllRelative) -Algorithm SHA256).Hash -ine $dllHash -or
         (Get-FileHash -LiteralPath (Join-Path $fixturePlugin $dllRelative) -Algorithm SHA256).Hash -ine $dllHash) {

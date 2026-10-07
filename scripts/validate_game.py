@@ -266,9 +266,10 @@ def stage_evidence(project, archive, engine, package_receipt, policy):
         installed = list((engine / 'Engine/Binaries/ThirdParty/CEF3/Win64').rglob(required))
         if len(matches) != 1 or not any(build_plugin.sha256(path) == matches[0][1] for path in installed):
             raise build_plugin.BuildError('Staged CEF runtime is missing or differs from the installed engine: ' + required)
+    helper = 'UnrealCEFSubProcess.exe' if policy['version'].startswith('4.') else 'EpicWebHelper.exe'
     subprocess_matches = [(name, sha) for name, sha in files.items()
-                          if name.endswith('/Engine/Binaries/Win64/UnrealCEFSubProcess.exe')]
-    installed_subprocess = engine / 'Engine/Binaries/Win64/UnrealCEFSubProcess.exe'
+                          if name.endswith('/Engine/Binaries/Win64/' + helper)]
+    installed_subprocess = engine / 'Engine/Binaries/Win64' / helper
     if (len(subprocess_matches) != 1 or not installed_subprocess.is_file()
             or subprocess_matches[0][1] != build_plugin.sha256(installed_subprocess)):
         raise build_plugin.BuildError('Staged CEF subprocess is missing or differs from the installed engine')
@@ -415,6 +416,7 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
             info = client.call('unreal.engine.info')
             if (info.get('pid') != process.pid or info.get('context') != 'game'
                     or not info.get('engine_ready') or not info.get('native_control')
+                    or info.get('editor_python') is not False
                     or not info.get('engine_version', '').startswith(engine_version + '.')):
                 raise build_plugin.BuildError('Live Game engine identity or control capability differs from the fixture')
             result['actions']['engine_info'] = info
@@ -427,6 +429,21 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
             if not reflected.get('return_value', '').startswith(engine_version + '.'):
                 raise build_plugin.BuildError('Native reflected UFunction did not return the current engine version')
             result['actions']['reflected_engine_version'] = reflected
+            property_args = {'object': '/Script/Engine.Default__GameUserSettings', 'property': 'bUseVSync'}
+            original = client.call('unreal.object.get', property_args)
+            if not isinstance(original, bool):
+                raise build_plugin.BuildError('Native Game property did not return its reflected boolean type')
+            try:
+                changed = client.call('unreal.object.set', dict(property_args, value=not original))
+                readback = client.call('unreal.object.get', property_args)
+                if changed is not (not original) or readback is not changed:
+                    raise build_plugin.BuildError('Native Game property mutation did not survive independent readback')
+            finally:
+                restored = client.call('unreal.object.set', dict(property_args, value=original))
+                if restored is not original:
+                    raise build_plugin.BuildError('Native Game property restoration failed')
+            result['actions']['reflected_property_roundtrip'] = {
+                **property_args, 'original': original, 'changed': changed, 'readback': readback, 'restored': restored}
             client.bind_call('python.acceptance.echo', lambda value: {'echo': value})
             reverse = client.call('python.acceptance.echo', {'value': 'packaged-game-round-trip'})
             if reverse != {'echo': 'packaged-game-round-trip'}:

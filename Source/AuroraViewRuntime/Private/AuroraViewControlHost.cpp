@@ -25,7 +25,7 @@ constexpr int32 MaxClients = 8;
 constexpr int32 MaxPending = 256;
 constexpr double ReplyTimeout = 30.0;
 const TCHAR* RpcEvent = TEXT("__auroraview_rpc");
-const TCHAR* ResultEvent = TEXT("__auroraview_call_result");
+const TCHAR* WireResultEvent = TEXT("__auroraview_call_result");
 const TCHAR* NativeMethods[] = {TEXT("unreal.engine.info"), TEXT("unreal.world.list"), TEXT("unreal.actor.list"),
     TEXT("unreal.object.describe"), TEXT("unreal.object.get"), TEXT("unreal.object.set"), TEXT("unreal.object.call"),
     TEXT("unreal.console.execute"), TEXT("unreal.python.execute")};
@@ -71,7 +71,7 @@ TSharedRef<FJsonObject> ReplyFrame(const FString& Id, const FAuroraViewReply& Re
         if (Reply.ErrorData.IsValid()) Error->SetField(TEXT("data"), Reply.ErrorData);
         Payload->SetObjectField(TEXT("error"), Error);
     }
-    return EventFrame(ResultEvent, MakeShared<FJsonValueObject>(Payload));
+    return EventFrame(WireResultEvent, MakeShared<FJsonValueObject>(Payload));
 }
 
 bool BoundedJson(const TArray<uint8>& Bytes)
@@ -283,7 +283,7 @@ struct FAuroraViewControlHost::FImpl
         if (Type != TEXT("event") || !Text(Frame, TEXT("event"), Event)) return;
         const auto* Data = Frame->Values.Find(TEXT("data"));
         const auto Payload = Data && Data->IsValid() && (*Data)->Type == EJson::Object ? (*Data)->AsObject() : nullptr;
-        if (Event == ResultEvent) { if (Payload.IsValid()) Result(Client, Payload); else Client->bClosed = true; return; }
+        if (Event == WireResultEvent) { if (Payload.IsValid()) Result(Client, Payload); else Client->bClosed = true; return; }
         if (Event == TEXT("child:ready")) return;
         if (Event == TEXT("child:closing")) { Client->bClosed = true; return; }
         if (Event != RpcEvent)

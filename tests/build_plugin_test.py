@@ -150,7 +150,7 @@ class BuildPluginTests(unittest.TestCase):
                     'TargetName': 'UE4Game', 'Platform': 'Win64', 'Configuration': configuration,
                     'BuildProducts': [{'Path': str(host_plugin / relative), 'Type': 'StaticLibrary'}]}))
             else:
-                intermediate = 'UE4' if policy['version'] == '4.26' else policy['game_target']
+                intermediate = 'UE4' if policy['version'].startswith('4.') else policy['game_target']
                 relative = Path(f'Intermediate/Build/Win64/x64/{intermediate}/{configuration}/{builder.RUNTIME_MODULE}')
                 object_name = f'Module.{builder.RUNTIME_MODULE}.cpp.obj'
                 object_data = struct.pack('<H', 0x8664) + b'\0' * 30

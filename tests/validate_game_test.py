@@ -56,7 +56,7 @@ class PackagedGameGuards(unittest.TestCase):
             write(self.archive / f'Windows/Engine/Binaries/ThirdParty/CEF3/Win64/{name}', 'synthetic CEF resource')
             write(self.engine / f'Engine/Binaries/ThirdParty/CEF3/Win64/{name}', 'synthetic CEF resource')
         for directory in [self.archive / 'Windows', self.engine]:
-            write(directory / 'Engine/Binaries/Win64/UnrealCEFSubProcess.exe', 'synthetic CEF subprocess')
+            write(directory / 'Engine/Binaries/Win64/EpicWebHelper.exe', 'synthetic CEF subprocess')
 
     def stage(self):
         return validator.stage_evidence(self.project, self.archive, self.engine, self.receipt, self.policy)
@@ -84,6 +84,9 @@ class PackagedGameGuards(unittest.TestCase):
 
     def test_legacy_cef_and_target_receipt_follow_ue418_distribution(self):
         self.policy = validator.preflight_engine.engine_policy({'MajorVersion': 4, 'MinorVersion': 18})
+        for directory in [self.archive / 'Windows', self.engine]:
+            (directory / 'Engine/Binaries/Win64/EpicWebHelper.exe').unlink()
+            write(directory / 'Engine/Binaries/Win64/UnrealCEFSubProcess.exe', 'synthetic CEF subprocess')
         target = self.project / f'Binaries/Win64/{validator.PROJECT}.target'
         data = json.loads(target.read_text())
         del data['TargetType']
@@ -99,7 +102,7 @@ class PackagedGameGuards(unittest.TestCase):
             self.stage()
 
     def test_cef_subprocess_must_match_installed_engine(self):
-        write(self.archive / 'Windows/Engine/Binaries/Win64/UnrealCEFSubProcess.exe', 'changed subprocess')
+        write(self.archive / 'Windows/Engine/Binaries/Win64/EpicWebHelper.exe', 'changed subprocess')
         with self.assertRaisesRegex(validator.build_plugin.BuildError, 'CEF subprocess'):
             self.stage()
 

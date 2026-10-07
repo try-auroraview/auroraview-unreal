@@ -87,7 +87,9 @@ struct FSession final : TSharedFromThis<FSession>
     bool bDisposing = false;
     uint64 TabEpoch = 0, DockRequest = 0;
     TSharedPtr<FTabSpawnerEntry> DockSpawner;
-    int32 DockInvocationDepth = 0;
+    int32 DockInvocationDepth = 0, DockFactoryDepth = 0;
+    bool bDockCleanupScheduled = false;
+    TFunction<void(const TSharedRef<FSession>&)> QueueDockCleanup;
     TArray<TFunction<void()>> PendingDockTeardown;
 
     void RetireDockSpawner()
@@ -101,16 +103,34 @@ struct FSession final : TSharedFromThis<FSession>
             if (Spawner && Manager->FindTabSpawnerFor(Id) == Spawner)
                 Manager->UnregisterNomadTabSpawner(Id);
         };
-        if (DockInvocationDepth) PendingDockTeardown.Add(Retire);
+        if (DockInvocationDepth || DockFactoryDepth) PendingDockTeardown.Add(Retire);
         else Retire();
+    }
+
+    void FlushDockTeardown()
+    {
+        if (DockInvocationDepth || DockFactoryDepth) return;
+        auto Teardown = MoveTemp(PendingDockTeardown);
+        for (auto& Retire : Teardown) Retire();
     }
 
     void EndDockInvocation()
     {
         check(DockInvocationDepth > 0);
-        if (--DockInvocationDepth) return;
-        auto Teardown = MoveTemp(PendingDockTeardown);
-        for (auto& Retire : Teardown) Retire();
+        --DockInvocationDepth;
+        FlushDockTeardown();
+    }
+
+    void EndDockFactory()
+    {
+        check(DockFactoryDepth > 0);
+        --DockFactoryDepth;
+        if (DockInvocationDepth || DockFactoryDepth || PendingDockTeardown.IsEmpty() || bDockCleanupScheduled) return;
+        // Layout restoration and native menus bypass OpenDocked. The module's
+        // next core tick owns cleanup after Slate adopts the returned tab and
+        // re-reads its spawner; shutdown also drains that retained session list.
+        bDockCleanupScheduled = true;
+        if (QueueDockCleanup) QueueDockCleanup(AsShared());
     }
 
     void OwnDockTab(const TSharedRef<SDockTab>& Tab)
@@ -273,8 +293,9 @@ struct FSession final : TSharedFromThis<FSession>
         {
             // The spawner's tab is not adopted by Slate until TryInvokeTab
             // returns. Retire session ownership now, close that tab afterwards.
-            const auto CloseTab = [OldTab]() { OldTab->RequestCloseTab(); };
-            if (DockInvocationDepth) PendingDockTeardown.Add(CloseTab);
+            const auto CloseTab = [OldTab]()
+            { if (FSlateApplication::IsInitialized()) OldTab->RequestCloseTab(); };
+            if (DockInvocationDepth || DockFactoryDepth) PendingDockTeardown.Add(CloseTab);
             else CloseTab();
         }
         if (bDestroyWindow && OldWindow && FSlateApplication::IsInitialized())
@@ -317,6 +338,7 @@ struct FSession final : TSharedFromThis<FSession>
 struct FAuroraViewEditorModule::FImpl
 {
     TMap<FName, TSharedPtr<FSession>> Sessions;
+    TArray<TSharedPtr<FSession>> PendingDockCleanup;
     FTSTicker::FDelegateHandle TickHandle;
     FDelegateHandle ExitHandle;
     IConsoleObject* DemoCommand = nullptr;
@@ -326,6 +348,14 @@ struct FAuroraViewEditorModule::FImpl
     bool bStopping = false;
     uint64 NextPresentationGeneration = 0;
     FString Root;
+
+    TSharedRef<FSession> MakeSession()
+    {
+        const auto Session = MakeShared<FSession>();
+        Session->QueueDockCleanup = [this](const TSharedRef<FSession>& Owner)
+        { PendingDockCleanup.AddUnique(Owner); };
+        return Session;
+    }
 
     bool IsCurrent(FName Id, const TSharedPtr<FSession>& Session) const
     {
@@ -337,6 +367,14 @@ struct FAuroraViewEditorModule::FImpl
     {
         check(IsInGameThread());
         if (bStopping) return false;
+        auto Retired = MoveTemp(PendingDockCleanup);
+        for (const auto& Session : Retired)
+        {
+            if (Session->DockInvocationDepth || Session->DockFactoryDepth)
+            { PendingDockCleanup.AddUnique(Session); continue; }
+            Session->bDockCleanupScheduled = false;
+            Session->FlushDockTeardown();
+        }
         // A handler may remove/open a view without invalidating map iteration.
         TArray<TSharedPtr<FSession>> Snapshot;
         Sessions.GenerateValueArray(Snapshot);
@@ -352,12 +390,17 @@ struct FAuroraViewEditorModule::FImpl
         FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
         TArray<TSharedPtr<FSession>> Snapshot;
         Sessions.GenerateValueArray(Snapshot);
+        for (const auto& Session : PendingDockCleanup) Snapshot.AddUnique(Session);
+        PendingDockCleanup.Reset();
         Sessions.Reset();
         for (const auto& Session : Snapshot)
         {
+            Session->QueueDockCleanup = {};
+            Session->bDockCleanupScheduled = false;
             Session->RetireDockSpawner();
             Session->Mailbox->Stop();
             Session->Dispose(true);
+            Session->FlushDockTeardown();
             Session->Handlers.Reset();
         }
     }
@@ -451,7 +494,7 @@ bool FAuroraViewEditorModule::OpenPresentation(FName Id, const FString& Fragment
         return false;
     }
     TSharedPtr<FSession>& Slot = Impl->Sessions.FindOrAdd(Id);
-    if (!Slot) Slot = MakeShared<FSession>();
+    if (!Slot) Slot = Impl->MakeSession();
     const TSharedPtr<FSession> Session = Slot;
     if (Session->bDisposing) { OutError = TEXT("View presentation is retiring"); return false; }
     if (Session->DockTab.Pin() != DockTab)
@@ -588,7 +631,7 @@ bool FAuroraViewEditorModule::RegisterDocked(FName Id, const FString& Fragment, 
         return false;
     }
     auto& Slot = Impl->Sessions.FindOrAdd(Id);
-    if (!Slot) Slot = MakeShared<FSession>();
+    if (!Slot) Slot = Impl->MakeSession();
     const auto SessionOwner = Slot;
     if (SessionOwner->bDisposing || SessionOwner->Browser || SessionOwner->DockTab.IsValid())
     {
@@ -609,6 +652,8 @@ bool FAuroraViewEditorModule::RegisterDocked(FName Id, const FString& Fragment, 
             {
                 const auto Tab = SNew(SDockTab).TabRole(ETabRole::NomadTab);
                 const auto Session = Weak.Pin();
+                if (Session) ++Session->DockFactoryDepth;
+                ON_SCOPE_EXIT { if (Session) Session->EndDockFactory(); };
                 // Track failed-spawn error tabs too so Close/Remove/shutdown can
                 // retire them; they are not successful browser sessions.
                 const bool bOwned = Session && Impl && Impl->IsCurrent(Id, Session);
@@ -623,6 +668,13 @@ bool FAuroraViewEditorModule::RegisterDocked(FName Id, const FString& Fragment, 
                 }
                 else if (Impl && Impl->IsCurrent(Id, Session) && Session->DockTab.Pin() == Tab) Session->LastOpenError.Empty();
                 return Tab;
+            })).SetReuseTabMethod(FOnFindTabToReuse::CreateLambda([this, Id, Weak](const FTabId&)
+            {
+                // Slate's default weak cache can still pin a manually closed
+                // tab retained by a caller. Reuse only this session's live tab.
+                const auto Session = Weak.Pin();
+                return Session && Impl && Impl->IsCurrent(Id, Session) && Session->bDockRegistered && !Session->bDisposing
+                    ? Session->DockTab.Pin() : TSharedPtr<SDockTab>();
             })).SetDisplayName(Title);
         SessionOwner->bDockRegistered = true;
         SessionOwner->DockId = DockId;
@@ -781,7 +833,7 @@ bool FAuroraViewEditorModule::BindCall(FName Id, const FString& Method, FAuroraV
     check(IsInGameThread());
     if (!Impl || Impl->bStopping || Id.IsNone() || Method.IsEmpty() || !Handler) return false;
     auto& Session = Impl->Sessions.FindOrAdd(Id);
-    if (!Session) Session = MakeShared<FSession>();
+    if (!Session) Session = Impl->MakeSession();
     Session->Handlers.Add(Method, MoveTemp(Handler));
     return true;
 }

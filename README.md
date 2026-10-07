@@ -9,24 +9,17 @@ selection or reject it, with an explicit 128-actor capacity. Native destination
 acceptance and manual interaction evidence remain separate validation gates.
 See [this stage’s native scope and acceptance](docs/native-showcase.md).
 
-**Historical baseline evidence: UE 5.7.4 / Win64 build/package checks passed at `6eb8fbd` and `934fa530`; the first real graphical smoke at `6eb8fbd` had mixed results.**
-This is reviewable source, not a supported binary or a completed Unreal release.
-No precompiled Unreal binary or stable release is included. The verified build
-used [source commit 6eb8fbd](https://github.com/try-auroraview/auroraview-unreal/commit/6eb8fbd44af951a8812a6df473e83d7a2adc96c5).
-UHT, C++ compilation, DLL linking and UAT packaging completed successfully.
-Required bridge assets and license notices were hash-checked in the final package.
-The first real graphical `AuroraView.Editor.BridgeRoundTrip` run at `6eb8fbd`
-passed native bridge readiness, echo and GameThread assertions, but its aggregated
-malformed-type assertion failed. A later independent Editor exit hit an Array
-assertion; its cause is unresolved, so clean shutdown is not claimed.
+The plugin remains experimental source for UE 5.7 Win64 Editor. No stable
+binary release is included. Native builds retain their exact source/engine
+identity, complete UAT log, compiler/SDK and verified package hashes. The
+isolated Editor runner checks all eight Automation results and process exit;
+compilation and graphical runtime acceptance have separate receipts.
 
-The stricter JSON-type source at
-[`934fa530`](https://github.com/try-auroraview/auroraview-unreal/commit/934fa5301a3e78ca0e41bf3890b0cc991c239e11)
-subsequently passed UE 5.7.4 UAT/UBT/wrapper and complete-package verification.
-The corrected missing/empty/numeric-type CEF checks still await a real Editor
-rerun. Broader lifecycle, GC and shutdown acceptance remain pending. None of
-these baseline results validates the new native follow-up features.
-See the [verification matrix](docs/acceptance.md).
+Manual docking, native drag destinations and timestamped media remain separate
+cases in the [verification matrix](docs/acceptance.md). Historical baseline
+builds and early failures are recorded in [source provenance](docs/provenance.md)
+and [source review](docs/source-review.md); use current build receipts and
+Automation reports to identify the exact validated integration commit.
 
 ## What is here
 

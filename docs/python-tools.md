@@ -30,6 +30,8 @@ window.auroraview.send_event('tools:result', {value});
 
 `bind_call` maps absent params to no arguments, objects to keyword arguments, arrays to positional arguments and scalar values to one argument. `bind_api` exports public callable methods with a namespace. Tool registration is connection-owned, cannot overwrite another owner's tool, and reserves `unreal.*` and `auroraview.*`. Disconnect unregisters tools and fails pending calls. SDK handlers/events run on bounded workers, separate from the socket reader, and can call the host synchronously. Callbacks must return cooperatively; stdlib Python cannot forcibly stop a hung user thread. `call_async` returns a Future; timeout/cancellation stops waiting, not an already-running Unreal operation.
 
+Future done callbacks run on the completing thread and must remain nonblocking. Use `call_async` without waiting there, or use SDK event/tool callbacks for synchronous host calls. A synchronous call from the socket reader fails immediately with a clear error. Calling `close()` inside a callback signals shutdown; an external `close()` joins the threads and verifies completion.
+
 | Method | Parameters and behavior |
 | --- | --- |
 | `unreal.engine.info` | Actual PID, engine version, Editor/Game context and enabled capabilities; available without broad control |

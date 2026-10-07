@@ -383,6 +383,105 @@ class PythonClientTests(unittest.TestCase):
             host.event("close", None)
             self.assertTrue(complete.wait(2))
 
+    def test_reverse_base_exceptions_reply_and_preserve_worker(self):
+        with Peer() as host, Client(host.port, TOKEN, max_workers=1) as client:
+            client.bind_call("python.echo", lambda value: value)
+            for exception in (SystemExit, KeyboardInterrupt, GeneratorExit):
+                with self.subTest(exception=exception.__name__):
+                    def abort(exception=exception):
+                        raise exception("script aborted")
+                    client.bind_call("python.abort", abort)
+                    reply = host.reverse("python.abort").result(1)
+                    self.assertFalse(reply["ok"])
+                    self.assertEqual(reply["error"]["name"], exception.__name__)
+                    self.assertEqual(reply["error"]["code"], "PYTHON_ERROR")
+                    self.assertEqual(client.call("python.echo", {"value": 42}), 42)
+
+    def test_event_base_exception_does_not_kill_worker(self):
+        complete = threading.Event()
+        with Peer() as host, Client(host.port, TOKEN, max_workers=1) as client:
+            def abort(_):
+                raise SystemExit("event aborted")
+            client.on("abort", abort)
+            client.on("after.abort", lambda _: complete.set())
+            with self.assertLogs("auroraview_unreal.client", level="ERROR"):
+                host.event("abort", None)
+                host.event("after.abort", None)
+                self.assertTrue(complete.wait(1))
+            self.assertEqual(client.call("test.echo", 42), 42)
+
+    def test_concurrent_worker_close_never_joins_another_callback(self):
+        barrier, outcomes = threading.Barrier(2), queue.Queue()
+        with Peer() as host, Client(host.port, TOKEN, timeout=0.2, max_workers=2) as client:
+            def closing(_):
+                try:
+                    barrier.wait(1)
+                    client.close()
+                    outcomes.put(None)
+                except BaseException as error:
+                    outcomes.put(error)
+            client.on("close.a", closing)
+            client.on("close.b", closing)
+            host.event("close.a", None)
+            host.event("close.b", None)
+            self.assertIsNone(outcomes.get(timeout=1))
+            self.assertIsNone(outcomes.get(timeout=1))
+
+    def test_future_callback_rejects_reader_wait_but_can_schedule_call(self):
+        outcome = queue.Queue()
+        with Peer() as host, Client(host.port, TOKEN, timeout=0.2) as client:
+            first = client.call_async("test.wait")
+            request = host.calls.get(timeout=1)
+            def completed(_):
+                try:
+                    client.call("test.echo", "must not send")
+                except Exception as error:
+                    outcome.put(error)
+                outcome.put(client.call_async("test.echo", 42))
+            first.add_done_callback(completed)
+            host.reply(request["id"], True)
+            error = outcome.get(timeout=1)
+            self.assertIsInstance(error, AuroraViewError)
+            self.assertIn("nonblocking", str(error))
+            self.assertEqual(outcome.get(timeout=1).result(1), 42)
+            self.assertEqual(host.calls.get(timeout=1)["params"], 42)
+
+    def test_reader_and_worker_close_do_not_join_each_other(self):
+        barrier, outcomes = threading.Barrier(2), queue.Queue()
+        with Peer() as host, Client(host.port, TOKEN, timeout=0.2, max_workers=1) as client:
+            def closing(_):
+                try:
+                    barrier.wait(1)
+                    client.close()
+                    outcomes.put(None)
+                except BaseException as error:
+                    outcomes.put(error)
+            client.on("close.worker", closing)
+            first = client.call_async("test.wait")
+            request = host.calls.get(timeout=1)
+            first.add_done_callback(closing)
+            host.event("close.worker", None)
+            host.reply(request["id"], True)
+            self.assertIsNone(outcomes.get(timeout=1))
+            self.assertIsNone(outcomes.get(timeout=1))
+
+    def test_external_close_reports_reader_callback_that_did_not_return(self):
+        entered, release = threading.Event(), threading.Event()
+        with Peer() as host, Client(host.port, TOKEN, timeout=0.15) as client:
+            first = client.call_async("test.wait")
+            request = host.calls.get(timeout=1)
+            def blocked(_):
+                entered.set()
+                release.wait(2)
+            first.add_done_callback(blocked)
+            host.reply(request["id"], True)
+            self.assertTrue(entered.wait(1))
+            try:
+                with self.assertRaisesRegex(TimeoutError, "reader"):
+                    client.close()
+            finally:
+                release.set()
+
 
 if __name__ == "__main__":
     unittest.main()

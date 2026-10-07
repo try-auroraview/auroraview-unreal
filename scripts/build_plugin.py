@@ -396,8 +396,10 @@ def game_evidence(package, host, policy):
             relative = path.relative_to(original_plugin.resolve())
             if path.suffix.lower() not in ['.lib', '.obj', '.precompiled']:
                 continue
+            # UE4.26's UBT shares the UE4 intermediate folder for UE4Game.
+            intermediate_target = 'UE4' if policy['version'] == '4.26' else policy['game_target']
             if path.suffix.lower() in ['.obj', '.precompiled'] and (configuration not in relative.parts or
-                                                                   policy['game_target'] not in relative.parts):
+                                                                   intermediate_target not in relative.parts):
                 raise BuildError(f'Runtime build product does not belong to the requested Game target: {relative}')
             packaged = package / relative
             produced = plugin / relative

@@ -47,6 +47,7 @@ class PackagedGameGuards(unittest.TestCase):
         write(self.project / f'Binaries/Win64/{validator.PROJECT}.target', json.dumps({
             'TargetName': validator.PROJECT, 'Platform': 'Win64', 'Configuration': 'Development', 'TargetType': 'Game'}))
         self.receipt = {'source_assets_sha256': {}}
+        self.policy = validator.preflight_engine.engine_policy({'MajorVersion': 5, 'MinorVersion': 7})
         for relative in ['Resources/ue_transport.js', 'ThirdParty/AuroraViewCore/manifest.json']:
             path = self.archive / f'Windows/{validator.PROJECT}/Plugins/AuroraView/{relative}'
             write(path, 'synthetic Runtime resource')
@@ -54,9 +55,11 @@ class PackagedGameGuards(unittest.TestCase):
         for name in ['libcef.dll', 'icudtl.dat', 'resources.pak']:
             write(self.archive / f'Windows/Engine/Binaries/ThirdParty/CEF3/Win64/{name}', 'synthetic CEF resource')
             write(self.engine / f'Engine/Binaries/ThirdParty/CEF3/Win64/{name}', 'synthetic CEF resource')
+        for directory in [self.archive / 'Windows', self.engine]:
+            write(directory / 'Engine/Binaries/Win64/UnrealCEFSubProcess.exe', 'synthetic CEF subprocess')
 
     def stage(self):
-        return validator.stage_evidence(self.project, self.archive, self.engine, self.receipt)
+        return validator.stage_evidence(self.project, self.archive, self.engine, self.receipt, self.policy)
 
     def test_stage_binds_actual_executable_resources_and_cef(self):
         game, evidence = self.stage()
@@ -77,6 +80,27 @@ class PackagedGameGuards(unittest.TestCase):
     def test_missing_cef_cannot_pass_runtime_distribution(self):
         (self.archive / 'Windows/Engine/Binaries/ThirdParty/CEF3/Win64/libcef.dll').unlink()
         with self.assertRaisesRegex(validator.build_plugin.BuildError, 'CEF runtime'):
+            self.stage()
+
+    def test_legacy_cef_and_target_receipt_follow_ue418_distribution(self):
+        self.policy = validator.preflight_engine.engine_policy({'MajorVersion': 4, 'MinorVersion': 18})
+        target = self.project / f'Binaries/Win64/{validator.PROJECT}.target'
+        data = json.loads(target.read_text())
+        del data['TargetType']
+        write(target, json.dumps(data))
+        (self.archive / 'Windows/Engine/Binaries/ThirdParty/CEF3/Win64/resources.pak').unlink()
+        for name in ['cef.pak', 'cef_100_percent.pak', 'cef_200_percent.pak', 'cef_extensions.pak',
+                     'devtools_resources.pak', 'natives_blob.bin', 'snapshot_blob.bin']:
+            for directory in [self.archive / 'Windows', self.engine]:
+                write(directory / f'Engine/Binaries/ThirdParty/CEF3/Win64/{name}', 'synthetic legacy CEF')
+        self.stage()
+        self.policy = validator.preflight_engine.engine_policy({'MajorVersion': 4, 'MinorVersion': 26})
+        with self.assertRaisesRegex(validator.build_plugin.BuildError, 'not a Game'):
+            self.stage()
+
+    def test_cef_subprocess_must_match_installed_engine(self):
+        write(self.archive / 'Windows/Engine/Binaries/Win64/UnrealCEFSubProcess.exe', 'changed subprocess')
+        with self.assertRaisesRegex(validator.build_plugin.BuildError, 'CEF subprocess'):
             self.stage()
 
     def test_editor_target_receipt_is_rejected(self):
@@ -110,8 +134,13 @@ class PackagedGameGuards(unittest.TestCase):
             self.assertIn('-clientconfig=Development', command)
             self.assertIn('-cook', command)
             self.assertNotIn('-skipbuildeditor', command)
-            self.assertNotIn('-nocompileeditor', command)
-            self.assertEqual('-VS2019' in command, policy['version'] == '4.26')
+            self.assertIn('-nocompileeditor', command)
+            self.assertNotIn('-VS2019', command)
+            self.assertEqual('-ubtargs=-2019 -NoHotReloadFromIDE' in command, policy['version'] == '4.26')
+            editor = validator.editor_command(self.engine, self.project / 'Fixture.uproject', policy)
+            self.assertIn(validator.PROJECT + 'Editor', editor)
+            self.assertEqual('-2019' in editor, policy['version'] == '4.26')
+            self.assertEqual('-NoHotReloadFromIDE' in editor, policy['version'] != '4.18')
 
     def test_fixture_targets_follow_engine_defaults_without_shared_build_override(self):
         package = self.root / 'Package'

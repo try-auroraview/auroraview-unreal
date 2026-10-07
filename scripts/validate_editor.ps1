@@ -266,6 +266,7 @@ try {
     $acceptanceLog = Join-Path $evidenceDirectory 'UnrealEditor-automation.log'
     # Keep rendering enabled: the suite exercises actual CEF and Slate widgets.
     $automationArguments = '"' + $fixtureProject + '" /Game/AuroraViewAcceptance/Smoke -AuroraViewFixtureMap=/Game/AuroraViewAcceptance/Smoke -AuroraViewAllowFixtureMutations -AuroraViewAllowControl -Unattended -NoSplash -NoSound -NoP4 -Windowed -ResX=1280 -ResY=720 -ExecCmds="Automation RunTests AuroraView." -TestExit="Automation Test Queue Empty" -ReportExportPath="' + $reportDirectory + '" -abslog="' + $acceptanceLog + '"'
+    if (-not $engineVersion.StartsWith('4.')) { $automationArguments += ' -LiveCoding=False' }
     if ($expectPython) { $automationArguments += ' -AuroraViewExpectEditorPython' }
     Assert-PackageFiles $packagePath $buildReceipt.package.files_sha256
     Assert-PackageFiles $fixturePlugin $buildReceipt.package.files_sha256

@@ -2,6 +2,7 @@
 #include "Modules/ModuleManager.h"
 #include "AuroraViewNativeShowcase.h"
 #include "AuroraViewFixture.h"
+#include "AuroraViewCompatibility.h"
 #include "Editor.h"
 #include "HAL/IConsoleManager.h"
 #include "Interfaces/IPluginManager.h"
@@ -29,7 +30,7 @@ void FAuroraViewEditorModule::StartupModule() {
     // Default loading makes the preparation UCLASS available to UE4 commandlets.
     // Editor-only UI registration still waits until the engine is initialized.
     if (GEditor) InitializeShowcase();
-    else Impl->PostEngineInit = FCoreDelegates::OnPostEngineInit.AddRaw(this, &FAuroraViewEditorModule::InitializeShowcase);
+    else Impl->PostEngineInit = AuroraViewCompatibility::PostEngineInit().AddRaw(this, &FAuroraViewEditorModule::InitializeShowcase);
 }
 void FAuroraViewEditorModule::InitializeShowcase() {
     if (!Impl || Impl->Showcase.IsValid()) return;
@@ -51,7 +52,7 @@ void FAuroraViewEditorModule::InitializeShowcase() {
 }
 void FAuroraViewEditorModule::ShutdownModule() {
     if (!Impl) return;
-    FCoreDelegates::OnPostEngineInit.Remove(Impl->PostEngineInit);
+    AuroraViewCompatibility::PostEngineInit().Remove(Impl->PostEngineInit);
     if (Impl->Showcase.IsValid()) Impl->Showcase->Stop();
     if (Impl->DockCommand) IConsoleManager::Get().UnregisterConsoleObject(Impl->DockCommand, false);
     if (Impl->FixtureCommand) IConsoleManager::Get().UnregisterConsoleObject(Impl->FixtureCommand, false);

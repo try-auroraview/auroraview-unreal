@@ -166,24 +166,38 @@ def run_logged(command, working, log, environment, timeout):
         try:
             process_receipt['exit_code'] = process.wait(timeout=timeout)
             if process.returncode:
-                raise build_plugin.BuildError(f'BuildCookRun exited {process.returncode}; see {log}')
+                raise build_plugin.BuildError(f'Native build exited {process.returncode}; see {log}')
         except subprocess.TimeoutExpired as error:
             process_receipt['timed_out'] = True
-            raise build_plugin.BuildError(f'BuildCookRun exceeded {timeout} seconds') from error
+            raise build_plugin.BuildError(f'Native build exceeded {timeout} seconds') from error
         finally:
             stop_owned(process)
             process_receipt.update(exit_code=process.returncode, completed_utc=now())
             write_json(path, process_receipt)
 
 
+def editor_command(engine, project, policy):
+    command = [str(engine / 'Engine/Build/BatchFiles/Build.bat'), PROJECT + 'Editor',
+               'Win64', 'Development', '-Project=' + str(project), '-NoHotReload']
+    if policy['version'] != '4.18':
+        # Outputs belong to this disposable project. No engine or loaded project
+        # DLL is replaced, even when another Editor has its Live Coding mutex.
+        command.extend(['-NoHotReloadFromIDE', '-NoEngineChanges'])
+    if policy['version'] == '4.26':
+        command.append('-2019')
+    return command
+
+
 def game_command(engine, project, archive, policy):
     command = [str(engine / 'Engine/Build/BatchFiles/RunUAT.bat'), 'BuildCookRun',
                '-project=' + str(project), '-target=' + PROJECT, '-noP4', '-platform=Win64',
-               '-clientconfig=Development', '-build', '-cook', '-stage', '-pak', '-package',
+               '-clientconfig=Development', '-build', '-nocompileeditor', '-cook', '-stage', '-pak', '-package',
                '-archive', '-archivedirectory=' + str(archive), '-map=/Engine/Maps/Entry',
                '-unattended', '-utf8output']
     if policy['version'] == '4.26':
-        command.append('-VS2019')
+        command.append('-ubtargs=-2019 -NoHotReloadFromIDE')
+    elif not policy['version'].startswith('4.'):
+        command.append('-ubtargs=-NoHotReloadFromIDE')
     if policy['version'].startswith('4.') and (engine / 'Engine/Binaries/DotNET/AutomationTool.exe').is_file():
         command.append('-nocompile')
     return command
@@ -202,7 +216,7 @@ def validate_executable(path):
             raise build_plugin.BuildError('Game output is not a Win64 PE32+ executable')
 
 
-def stage_evidence(project, archive, engine, package_receipt):
+def stage_evidence(project, archive, engine, package_receipt, policy):
     files = inventory(archive)
     if not files:
         raise build_plugin.BuildError('BuildCookRun produced no archived Game files')
@@ -226,7 +240,8 @@ def stage_evidence(project, archive, engine, package_receipt):
     if len(targets) != 1:
         raise build_plugin.BuildError('Missing unique actual Development Win64 Game target receipt')
     target_path, target = targets[0]
-    if target.get('TargetType', 'Game') != 'Game':
+    target_type = target.get('TargetType')
+    if target_type != 'Game' and not (target_type is None and policy['version'] == '4.18'):
         raise build_plugin.BuildError('Compiled target is not a Game target')
     built_exes = list((project / 'Binaries/Win64').glob(PROJECT + '*.exe'))
     digest = build_plugin.sha256(executable)
@@ -242,11 +257,22 @@ def stage_evidence(project, archive, engine, package_receipt):
             raise build_plugin.BuildError('Required packaged Runtime resource missing or changed: ' + relative)
         resources[matches[0][0]] = expected
     cef = {name: sha for name, sha in files.items() if '/CEF3/' in '/' + name}
-    for required in ['libcef.dll', 'icudtl.dat', 'resources.pak']:
+    required_files = ['libcef.dll', 'icudtl.dat']
+    required_files += (['cef.pak', 'cef_100_percent.pak', 'cef_200_percent.pak',
+                        'cef_extensions.pak', 'devtools_resources.pak', 'natives_blob.bin', 'snapshot_blob.bin']
+                       if policy['version'].startswith('4.') else ['resources.pak'])
+    for required in required_files:
         matches = [(name, sha) for name, sha in cef.items() if Path(name).name == required]
         installed = list((engine / 'Engine/Binaries/ThirdParty/CEF3/Win64').rglob(required))
         if len(matches) != 1 or not any(build_plugin.sha256(path) == matches[0][1] for path in installed):
             raise build_plugin.BuildError('Staged CEF runtime is missing or differs from the installed engine: ' + required)
+    subprocess_matches = [(name, sha) for name, sha in files.items()
+                          if name.endswith('/Engine/Binaries/Win64/UnrealCEFSubProcess.exe')]
+    installed_subprocess = engine / 'Engine/Binaries/Win64/UnrealCEFSubProcess.exe'
+    if (len(subprocess_matches) != 1 or not installed_subprocess.is_file()
+            or subprocess_matches[0][1] != build_plugin.sha256(installed_subprocess)):
+        raise build_plugin.BuildError('Staged CEF subprocess is missing or differs from the installed engine')
+    cef.update(subprocess_matches)
     return executable, {'files_sha256': files, 'runtime_resources_sha256': resources,
                         'cef_sha256': cef, 'executable_sha256': digest,
                         'target_receipt': str(target_path), 'target_receipt_sha256': build_plugin.sha256(target_path),
@@ -511,15 +537,21 @@ def validate(engine_root, package_root, output_root, timeout, rendered_browser=F
         environment = os.environ.copy()
         environment.update(overrides)
         before_config = build_plugin.configuration_inputs(engine)
+        prepare_command = editor_command(engine, project / f'{PROJECT}.uproject', policy)
         result.update(environment_overrides=overrides, ubt_configuration_sha256=before_config,
-                      build_command=command, packaged_game='failed')
+                      editor_build_command=prepare_command, build_command=command, packaged_game='failed')
         write_json(result_path, result)
+        editor_log = output / 'editor-build.log'
+        print('Fixture Editor build log: ' + str(editor_log), flush=True)
+        run_logged(prepare_command, project, editor_log, environment, timeout)
+        result['editor_build_log_sha256'] = build_plugin.sha256(editor_log)
+        result['editor_compiler_toolchains'] = build_plugin.compiler_evidence(editor_log, policy)
         log = output / 'uat.log'
         print('BuildCookRun log: ' + str(log), flush=True)
         run_logged(command, project, log, environment, timeout)
         result['uat_log_sha256'] = build_plugin.sha256(log)
         result['compiler_toolchains'] = build_plugin.compiler_evidence(log, policy)
-        executable, stage = stage_evidence(project, archive, engine, package_receipt)
+        executable, stage = stage_evidence(project, archive, engine, package_receipt, policy)
         result['stage'] = stage
         result['runtime'] = run_game(executable, evidence, policy['version'], timeout, rendered_browser)
         after_stage = inventory(archive)

@@ -14,6 +14,15 @@
 
 namespace AuroraViewCompatibility
 {
+inline FSimpleMulticastDelegate& PostEngineInit()
+{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8
+    return FCoreDelegates::GetOnPostEngineInit();
+#else
+    return FCoreDelegates::OnPostEngineInit;
+#endif
+}
+
 inline FString UInt64String(uint64 Value)
 {
     return FString::Printf(TEXT("%llu"), static_cast<unsigned long long>(Value));

@@ -85,7 +85,8 @@ class _Workers:
             try:
                 if not self._stopped.is_set():
                     function()
-            except Exception:
+            except BaseException:
+                # Script exits belong to that callback, not to the worker pool.
                 _LOG.exception("AuroraView Python callback failed")
             finally:
                 self._queue.task_done()
@@ -221,6 +222,11 @@ class Client:
             raise closed from error
 
     def call_async(self, method, params=_ABSENT, *, timeout=None):
+        """Return a standard Future whose done callbacks must be nonblocking.
+
+        Reply and timeout callbacks normally execute on the socket reader.
+        Schedule another call with call_async; do not wait for it in a callback.
+        """
         self._ensure_open()
         if not isinstance(method, str) or not method or len(method) > 256:
             raise ValueError("method must be a nonempty string of at most 256 characters")
@@ -250,6 +256,8 @@ class Client:
             self._pending.pop(request_id, None)
 
     def call(self, method, params=_ABSENT, *, timeout=None):
+        if threading.current_thread() is self._reader:
+            raise AuroraViewError("Future done callbacks on the socket reader must be nonblocking; use call_async")
         future = self.call_async(method, params, timeout=timeout)
         duration = self.timeout if timeout is None else float(timeout)
         try:
@@ -406,7 +414,7 @@ class Client:
                 else:
                     result = function(params)
                 self._reply(request_id, result=result)
-            except Exception as exception:
+            except BaseException as exception:
                 try:
                     self._reply(request_id, error={"name": type(exception).__name__, "message": str(exception), "code": "PYTHON_ERROR"})
                 except (AuroraViewError, OSError):
@@ -517,6 +525,11 @@ class Client:
             _complete(future, error=error)
 
     def close(self):
+        """Stop the connection; external callers also join the SDK threads.
+
+        A reader/worker callback requests shutdown without waiting for peer
+        callbacks, which may themselves be closing or waiting for this thread.
+        """
         if not self._closed.is_set():
             try:
                 if self._identity is not None:
@@ -524,10 +537,15 @@ class Client:
             except (AuroraViewError, OSError):
                 pass
             self._abort(ConnectionClosedError("Client closed"))
+        current = threading.current_thread()
+        if current is self._reader or current in self._workers.threads:
+            return
         deadline = time.monotonic() + self.timeout
-        if self._reader.ident is not None and self._reader is not threading.current_thread():
+        if self._reader.ident is not None:
             self._reader.join(max(0, deadline - time.monotonic()))
         remaining = self._workers.join(deadline)
+        if self._reader.is_alive():
+            remaining.append(self._reader.name)
         if remaining:
             raise TimeoutError("Python callbacks did not return during close: " + ", ".join(remaining))
 

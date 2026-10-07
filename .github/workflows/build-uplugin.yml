@@ -48,7 +48,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AuroraView-UE${{ matrix.engine }}-Win64-${{ github.sha }}
+          name: AuroraView-UE${{ matrix.engine }}-Win64-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ env.BUILD_OUTPUT }}
           if-no-files-found: error
           retention-days: 14
@@ -61,7 +61,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AuroraView-Game-UE${{ matrix.engine }}-Win64-${{ github.sha }}
+          name: AuroraView-Game-UE${{ matrix.engine }}-Win64-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ env.BUILD_OUTPUT }}-Game
           if-no-files-found: warn
           retention-days: 14

@@ -259,14 +259,21 @@ def stage_evidence(project, archive, engine, package_receipt, policy):
             raise build_plugin.BuildError('Required packaged Runtime resource missing or changed: ' + relative)
         resources[matches[0][0]] = expected
     cef = {name: sha for name, sha in files.items() if '/CEF3/' in '/' + name}
+    cef_relative = Path('Engine/Binaries/ThirdParty/CEF3/Win64')
+    cef_prefix = (executable.parents[3].relative_to(archive) / cef_relative).as_posix() + '/'
+    # UE5.5 stages icudtl.dat in both Win64 and Win64/Resources. Bind every
+    # resource to its installed relative path rather than assuming unique names.
+    for name, sha in cef.items():
+        installed = engine / cef_relative / name[len(cef_prefix):]
+        if (not name.startswith(cef_prefix) or not installed.is_file()
+                or build_plugin.sha256(installed) != sha):
+            raise build_plugin.BuildError('Staged CEF runtime differs from the installed engine path: ' + name)
     required_files = ['libcef.dll', 'icudtl.dat']
     required_files += (['cef.pak', 'cef_100_percent.pak', 'cef_200_percent.pak',
                         'cef_extensions.pak', 'devtools_resources.pak', 'natives_blob.bin', 'snapshot_blob.bin']
                        if policy['version'].startswith('4.') else ['resources.pak'])
     for required in required_files:
-        matches = [(name, sha) for name, sha in cef.items() if Path(name).name == required]
-        installed = list((engine / 'Engine/Binaries/ThirdParty/CEF3/Win64').rglob(required))
-        if len(matches) != 1 or not any(build_plugin.sha256(path) == matches[0][1] for path in installed):
+        if not any(Path(name).name == required for name in cef):
             raise build_plugin.BuildError('Staged CEF runtime is missing or differs from the installed engine: ' + required)
     helper = 'UnrealCEFSubProcess.exe' if policy['version'].startswith('4.') else 'EpicWebHelper.exe'
     subprocess_matches = [(name, sha) for name, sha in files.items()

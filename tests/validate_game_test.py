@@ -82,6 +82,21 @@ class PackagedGameGuards(unittest.TestCase):
         with self.assertRaisesRegex(validator.build_plugin.BuildError, 'CEF runtime'):
             self.stage()
 
+    def test_cef_resources_with_duplicate_names_bind_each_installed_path(self):
+        relative = 'Engine/Binaries/ThirdParty/CEF3/Win64/Resources/icudtl.dat'
+        for directory in [self.archive / 'Windows', self.engine]:
+            write(directory / relative, 'second installed ICU resource')
+        self.stage()
+        write(self.archive / 'Windows' / relative, 'changed second ICU resource')
+        with self.assertRaisesRegex(validator.build_plugin.BuildError, 'installed engine path'):
+            self.stage()
+
+    def test_cef_resource_matching_another_installed_path_is_rejected(self):
+        relative = 'Engine/Binaries/ThirdParty/CEF3/Win64/Resources/icudtl.dat'
+        write(self.archive / 'Windows' / relative, 'synthetic CEF resource')
+        with self.assertRaisesRegex(validator.build_plugin.BuildError, 'installed engine path'):
+            self.stage()
+
     def test_legacy_cef_and_target_receipt_follow_ue418_distribution(self):
         self.policy = validator.preflight_engine.engine_policy({'MajorVersion': 4, 'MinorVersion': 18})
         for directory in [self.archive / 'Windows', self.engine]:

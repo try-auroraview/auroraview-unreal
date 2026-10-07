@@ -1,11 +1,12 @@
 # AuroraView Unreal Editor source candidate
 
-**Native follow-up stage 3: new UHT/UBT/package and Editor runtime gates are `not_run`.**
+**The native feature branches are integrated with reproducible Windows build
+and validation commands.** See [local builds and CI](docs/building.md).
 
 This cumulative stage adds actual Slate drag/drop surfaces and guarded native
 fixtures/evidence on top of stages 1 and 2. Actor drags admit the whole valid
 selection or reject it, with an explicit 128-actor capacity. Native destination
-acceptance, Undo and all new native build/runtime gates remain unverified.
+acceptance and manual interaction evidence remain separate validation gates.
 See [this stage’s native scope and acceptance](docs/native-showcase.md).
 
 **Historical baseline evidence: UE 5.7.4 / Win64 build/package checks passed at `6eb8fbd` and `934fa530`; the first real graphical smoke at `6eb8fbd` had mixed results.**
@@ -85,6 +86,10 @@ Requires C++17 compiler, Node.js and Python 3; no third-party package installati
 The C++ tests compile the exact transport mailbox used by the plugin. Node tests
 exercise the vendored **unmodified Core bridge** plus the actual UE transport JS
 in isolated VM contexts. These are contract tests, not a fake Unreal build.
+
+Windows source checks, verified UAT packaging and isolated Editor automation
+are available through [the build guide](docs/building.md). The GitHub native
+build uses the same package-verification entry point as local builds.
 
 ## Prepare a real engine build
 

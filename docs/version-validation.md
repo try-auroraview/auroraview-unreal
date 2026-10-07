@@ -1,7 +1,10 @@
 # Experimental UE version selection
 
-**UE 5.7 Win64 Editor is admitted for the first validation build, not declared
-supported.** No UHT/UBT or native Editor run has passed for this candidate.
+**UE 5.7 Win64 Editor is the experimental validation target.** Native builds
+now use the shared [local/CI build entry point](building.md), which retains
+UHT/UBT diagnostics, verifies the complete package and records its source and
+engine identity. Consult the receipt for the exact validated commit. Editor
+automation and manual acceptance remain separate gates.
 
 The version gate selects a single intended source-validation target. Exact
 source overloads, UHT generation and UBT rules still require a real build of
@@ -20,14 +23,14 @@ and IPC; no external CEF binary is bundled.
 
 ## Target policy
 
-The present patch only changes the source gate and preflight to UE 5.7. Use a
+The source gate and preflight deliberately select UE 5.7. Use a
 compiler and SDK supported by that exact engine installation, following Epic's
 official setup guidance. All other engine minors and non-Win64/non-Editor
 targets remain unverified and blocked. A future version requires its own
 compile, browser and lifecycle validation; no compatibility is inferred from
 shared API names or a shared CEF version.
 
-## Next verification gates
+## Verification gates
 
 1. Verify the normal repository source commit/tree on the selected executor
 2. Read actual `Build.version`, relevant public headers, compiler and SDK again

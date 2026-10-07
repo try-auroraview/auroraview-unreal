@@ -1,0 +1,59 @@
+name: Unreal plugin build
+
+on:
+  push:
+    branches: [main, agent/**]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unreal-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-plugin:
+    name: UE 5.7 Win64 native build
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64, auroraview-unreal]
+    timeout-minutes: 45
+    env:
+      UE_ROOT: F:\UE\UE_5.7
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select an isolated build output
+        shell: pwsh
+        run: |
+          $buildOutput = Join-Path $env:RUNNER_TEMP 'AuroraView-${{ github.run_id }}-${{ github.run_attempt }}'
+          "BUILD_OUTPUT=$buildOutput" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build and verify the complete plugin package
+        shell: pwsh
+        run: |
+          python scripts/build_plugin.py --engine-root "$env:UE_ROOT" --output "$env:BUILD_OUTPUT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain package, build receipt and complete UAT log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuroraView-UE5.7-Win64-${{ github.sha }}
+          path: ${{ env.BUILD_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 14
+
+  fork-boundary:
+    name: Fork build instructions
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Explain the native build boundary
+        run: |
+          echo 'Fork PRs run the hosted source-contract checks.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A maintainer must review and import the branch before native code runs on the Unreal runner.' >> "$GITHUB_STEP_SUMMARY"

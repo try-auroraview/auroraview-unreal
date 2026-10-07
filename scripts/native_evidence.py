@@ -215,8 +215,8 @@ def validate(data, evidence_root=None, require_complete=False, trusted_inputs=No
                             if not member.isfile(): continue
                             path=safe_path(member.name)
                             if not require(path is not None,'unsafe archive member'): continue
-                            require(str(path) not in manifest,'duplicate archive member')
-                            manifest[str(path)]=hashlib.sha256(tar.extractfile(member).read()).hexdigest()
+                            require(path.as_posix() not in manifest,'duplicate archive member')
+                            manifest[path.as_posix()]=hashlib.sha256(tar.extractfile(member).read()).hexdigest()
                         require(manifest==files,'archive contents differ from trusted source files')
             except (ValueError,OSError,KeyError,TypeError,tarfile.TarError,EOFError) as e: errors.append('invalid delivery receipt/archive: '+str(e))
     dll_file=artifact(build.get('dll'),'native DLL')

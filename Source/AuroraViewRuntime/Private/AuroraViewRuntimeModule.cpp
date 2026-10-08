@@ -399,7 +399,8 @@ struct FSession final : TSharedFromThis<FSession>
             case AuroraView::SessionMailbox::Kind::Ready:
                 bReady = true;
                 Mailbox->SetVisible(DockTab.IsValid() || (Window.IsValid() && Window->IsVisible()));
-                UE_LOG(LogAuroraView, Display, TEXT("Bridge ready, generation %llu"), Generation);
+                UE_LOG(LogAuroraView, Display, TEXT("Bridge ready, generation %llu; presentation_generation=%llu"),
+                    Generation, PresentationGeneration);
                 break;
             case AuroraView::SessionMailbox::Kind::Wire:
                 Handle(UTF8_TO_TCHAR(Message.Payload.c_str()));
@@ -408,7 +409,17 @@ struct FSession final : TSharedFromThis<FSession>
         }
         if (Browser.IsValid() && !bReady && FPlatformTime::Seconds() > ReadyDeadline)
         {
-            UE_LOG(LogAuroraView, Error, TEXT("AuroraView bridge startup timed out; closing failed view"));
+            const FString CurrentUrl = Browser->GetUrl();
+            const TCHAR* UrlKind = CurrentUrl == TEXT("about:blank") ? TEXT("initial")
+                : (CurrentUrl == OwnedUrl ? TEXT("owned") : TEXT("other"));
+            UE_LOG(LogAuroraView, Error, TEXT("AuroraView bridge startup timed out; closing failed view; ")
+                TEXT("presentation_generation=%llu epoch=%llu native_valid=%d native_initialized=%d native_loading=%d ")
+                TEXT("native_load_error=%d loaded=%d boot_attempted=%d document_pending=%d url_kind=%s"),
+                PresentationGeneration, Generation, NativeBrowser.IsValid() && NativeBrowser->IsValid(),
+                NativeBrowser.IsValid() && NativeBrowser->IsInitialized(),
+                NativeBrowser.IsValid() && NativeBrowser->IsLoading(),
+                NativeBrowser.IsValid() ? NativeBrowser->GetLoadError() : 0,
+                Browser->IsLoaded(), bBootAttempted, !PendingDocument.IsEmpty(), UrlKind);
             Dispose(true);
         }
         else LoadPendingDocument();
@@ -943,6 +954,9 @@ TSharedRef<FJsonObject> FAuroraViewRuntimeModule::DescribeView(FName Id) const
     State->SetBoolField(TEXT("dock_registered"), Session.IsValid() && Session->bDockRegistered);
     State->SetStringField(TEXT("tab_id"), Session.IsValid() && Session->bDockRegistered ? Session->DockId.ToString() : FString());
     State->SetStringField(TEXT("tab_layout_id"), Tab.IsValid() ? Tab->GetLayoutIdentifier().ToString() : FString());
+    // UE5 ToString intentionally omits the transient document instance. Report
+    // the public numeric field separately, preserving the existing layout key.
+    State->SetNumberField(TEXT("tab_instance_id"), Tab.IsValid() ? Tab->GetLayoutIdentifier().InstanceId : INDEX_NONE);
     State->SetBoolField(TEXT("tab_open"), Tab.IsValid());
     State->SetBoolField(TEXT("tab_active"), Tab.IsValid() && Tab->IsActive());
     State->SetBoolField(TEXT("tab_foreground"), Tab.IsValid() && Tab->IsForeground());

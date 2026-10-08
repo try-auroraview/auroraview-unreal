@@ -33,10 +33,11 @@ void AddDockDiagnostics(FAutomationTestBase* Test, const TSharedPtr<FTabManager>
         const auto CachedWindow = Tab.IsValid() ? Tab->GetParentWindow() : TSharedPtr<SWindow>();
         const auto ActualWindow = Tab.IsValid()
             ? FSlateApplication::Get().FindWidgetWindow(Tab.ToSharedRef()) : TSharedPtr<SWindow>();
-        Test->AddInfo(FString::Printf(TEXT("Dock diagnostic lookup=%s exists=%d layoutId=%s ")
+        Test->AddInfo(FString::Printf(TEXT("Dock diagnostic lookup=%s exists=%d layoutId=%s instanceId=%d ")
             TEXT("cachedAreaWindow=%s actualWidgetWindow=%s actualAtRoot=%d"),
             *LookupId.ToString(), Tab.IsValid(),
             Tab.IsValid() ? *Tab->GetLayoutIdentifier().ToString() : TEXT("none"),
+            Tab.IsValid() ? Tab->GetLayoutIdentifier().InstanceId : INDEX_NONE,
             *NativeWindowHandle(CachedWindow), *NativeWindowHandle(ActualWindow),
             Root.IsValid() && ActualWindow == Root));
     };
@@ -81,7 +82,7 @@ struct FDockState
     int32 Phase = 0;
     uint64 FirstGeneration = 0;
     bool bObservedDetailsClosed = false;
-    FString FirstLayoutId;
+    int32 FirstInstanceId = INDEX_NONE;
     FString LastWait = TEXT("initial CEF echo/report");
     FString LastDockErrorCode, LastDockErrorMessage;
     double Deadline = 0;
@@ -201,7 +202,10 @@ public:
             Test->TestTrue(TEXT("Native dock move retains browser readiness"), Attached->GetBoolField(TEXT("ready")));
             Test->TestEqual(TEXT("Native dock move preserves browser generation"), Module.GetGeneration(DockA), State->FirstGeneration);
             Test->TestEqual(TEXT("Native docking preserves the registered private tab type"), NativeTab->GetLayoutIdentifier().TabType, FName(TEXT("AuroraView.View.DockAcceptanceA")));
-            State->FirstLayoutId = Attached->GetStringField(TEXT("tab_layout_id"));
+            State->FirstInstanceId = NativeTab->GetLayoutIdentifier().InstanceId;
+            Test->TestTrue(TEXT("Slate assigns a transient document instance to the first native attachment"), State->FirstInstanceId >= 0);
+            Test->TestEqual(TEXT("Describe reports the first independently read native document instance"),
+                static_cast<int32>(Attached->GetNumberField(TEXT("tab_instance_id"))), State->FirstInstanceId);
             Test->TestEqual(TEXT("Native docking rebinds the CEF parent to the root window"), Attached->GetStringField(TEXT("browser_parent_window_native_handle")), Attached->GetStringField(TEXT("root_window_native_handle")));
             Test->TestTrue(TEXT("Idempotent open preserves actual root attachment"), OpenControlDock(Runtime, DockA).bOk && Runtime.DescribeView(DockA)->GetBoolField(TEXT("attached_to_root_window")));
             Module.Close(DockA);
@@ -209,6 +213,8 @@ public:
             Test->TestTrue(TEXT("Close A preserves B"), Module.IsReady(DockB));
             const auto Closed = Runtime.DescribeView(DockA);
             Test->TestTrue(TEXT("Closed native state retains registration but no live presentation"), Closed->GetBoolField(TEXT("dock_registered")) && !Closed->GetBoolField(TEXT("tab_open")) && !Closed->GetBoolField(TEXT("open")) && Closed->GetNumberField(TEXT("generation")) == 0);
+            Test->TestEqual(TEXT("Closed native state has no document instance"),
+                static_cast<int32>(Closed->GetNumberField(TEXT("tab_instance_id"))), INDEX_NONE);
             State->Phase = 2;
             State->LastWait = TEXT("native A tab removal after Close");
             Test->AddInfo(TEXT("DockedLifecycle phase 2: native root attachment verified; A closed"));
@@ -247,7 +253,11 @@ public:
         Test->TestEqual(TEXT("Reopened Describe agrees with the actual native widget window handle"),
             Reattached->GetStringField(TEXT("window_native_handle")), NativeWindowHandle(ReopenedWindow));
         Test->TestEqual(TEXT("Reattaching does not restart the reopened browser"), Module.GetGeneration(DockA), ReopenedGeneration);
-        Test->TestTrue(TEXT("Slate assigns a new transient document instance on reopened attachment"), Reattached->GetStringField(TEXT("tab_layout_id")) != State->FirstLayoutId);
+        const int32 ReopenedInstanceId = ReopenedTab.IsValid() ? ReopenedTab->GetLayoutIdentifier().InstanceId : INDEX_NONE;
+        Test->TestTrue(TEXT("Slate assigns a new transient document instance on reopened attachment"),
+            ReopenedInstanceId >= 0 && ReopenedInstanceId != State->FirstInstanceId);
+        Test->TestEqual(TEXT("Describe reports the reopened independently read native document instance"),
+            static_cast<int32>(Reattached->GetNumberField(TEXT("tab_instance_id"))), ReopenedInstanceId);
         Test->TestTrue(TEXT("Attachment preserves the existing native destination tab"), Destination.IsValid()
             && TargetManager->FindExistingLiveTab(DetailsId) == Destination);
         Test->TestEqual(TEXT("B did not reload during A close/reopen"), State->ReportsB, 1);

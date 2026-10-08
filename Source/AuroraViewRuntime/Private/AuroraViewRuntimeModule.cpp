@@ -418,7 +418,7 @@ struct FSession final : TSharedFromThis<FSession>
     {
         if (!Browser.IsValid() || !NativeBrowser.IsValid()) return;
         const auto Tab = DockTab.Pin();
-        const auto Parent = Tab.IsValid() ? Tab->GetParentWindow() : Window;
+        const auto Parent = Tab.IsValid() ? AuroraViewCompatibility::FindTabWindow(Tab) : Window;
         if (!Parent.IsValid() || BrowserParentWindow.Pin() == Parent) return;
         // Slate adopts a spawned tab after its content factory returns. Follow
         // its actual host window on later ticks, including drag and redock.
@@ -865,9 +865,9 @@ bool FAuroraViewRuntimeModule::DockInTabManager(FName Id, const TSharedRef<FTabM
     { OutError = TEXT("Open this registered native dock tab before moving it"); return false; }
     const auto Target = TargetManager->FindExistingLiveTab(PlaceholderId);
     const auto Root = FGlobalTabmanager::Get()->GetRootWindow();
-    if (!Target.IsValid() || !Root.IsValid() || Target->GetParentWindow() != Root || Target == Tab)
+    if (!Target.IsValid() || !Root.IsValid() || AuroraViewCompatibility::FindTabWindow(Target) != Root || Target == Tab)
     { OutError = TEXT("The destination must be an open tab in the Editor root window"); return false; }
-    if (Tab->GetParentWindow() == Root)
+    if (AuroraViewCompatibility::FindTabWindow(Tab) == Root)
     { Session->UpdateBrowserParent(); return Show(Id); }
     const uint64 Epoch = Session->Generation;
     const uint64 Request = ++Session->DockRequest;
@@ -890,7 +890,7 @@ bool FAuroraViewRuntimeModule::DockInTabManager(FName Id, const TSharedRef<FTabM
     if (!Current()) { OutError = TEXT("Dock move interrupted by a retired presentation"); return false; }
     Session->OwnDockTab(Tab.ToSharedRef());
     Session->UpdateBrowserParent();
-    if (!Current() || Tab->GetParentWindow() != Root || Tab->GetLayoutIdentifier().TabType != Session->DockId)
+    if (!Current() || AuroraViewCompatibility::FindTabWindow(Tab) != Root || Tab->GetLayoutIdentifier().TabType != Session->DockId)
     {
         OutError = TEXT("Slate did not attach the native view to the requested Editor root stack");
         return false;
@@ -925,7 +925,7 @@ TSharedRef<FJsonObject> FAuroraViewRuntimeModule::DescribeView(FName Id) const
     const auto* Entry = Impl ? Impl->Sessions.Find(Id) : nullptr;
     const auto Session = Entry ? *Entry : TSharedPtr<FSession>();
     const auto Tab = Session.IsValid() ? Session->DockTab.Pin() : TSharedPtr<SDockTab>();
-    const auto Window = Tab.IsValid() ? Tab->GetParentWindow() : (Session.IsValid() ? Session->Window : TSharedPtr<SWindow>());
+    const auto Window = Tab.IsValid() ? AuroraViewCompatibility::FindTabWindow(Tab) : (Session.IsValid() ? Session->Window : TSharedPtr<SWindow>());
     const auto Root = FSlateApplication::IsInitialized() ? FGlobalTabmanager::Get()->GetRootWindow() : TSharedPtr<SWindow>();
     const auto Handle = [](const TSharedPtr<SWindow>& Value)
     {

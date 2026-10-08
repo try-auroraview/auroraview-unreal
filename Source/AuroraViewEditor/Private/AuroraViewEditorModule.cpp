@@ -42,16 +42,15 @@ FAuroraViewReply DockEditorView(const TSharedPtr<FJsonValue>& Params) {
     const auto Manager = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
     const auto Root = FGlobalTabmanager::Get()->GetRootWindow();
     const auto Owner = Manager.IsValid() ? Manager->GetOwnerTab() : TSharedPtr<SDockTab>();
-    if (!Root.IsValid() || !Root->GetNativeWindow().IsValid() || !Owner.IsValid() || Owner->GetParentWindow() != Root)
+    if (!Root.IsValid() || !Root->GetNativeWindow().IsValid() || !Owner.IsValid() || AuroraViewCompatibility::FindTabWindow(Owner) != Root)
         return FAuroraViewReply::Failure(TEXT("EditorUnavailable"), TEXT("The Level Editor layout is not ready"), TEXT("EDITOR_UNAVAILABLE"));
     FName DestinationId(TEXT("LevelEditorSelectionDetails"));
     auto Destination = Manager->FindExistingLiveTab(DestinationId);
     if (!Destination.IsValid())
         Destination = AuroraViewCompatibility::TryInvokeTab(Manager.ToSharedRef(), DestinationId);
-    if (!Destination.IsValid() || Destination->GetParentWindow() != Root)
+    if (!Destination.IsValid() || AuroraViewCompatibility::FindTabWindow(Destination) != Root)
     {
-        // InvokeTab may reuse a closed Details tab whose native parent is gone.
-        // Missing, parentless and floating Details all use an existing root
+        // Missing, not yet adopted and floating Details use an existing root
         // viewport instead. Never repair another tab's spawner or relocate it.
         const FName ViewportIds[] = { FName(TEXT("LevelEditorViewport")),
             FName(TEXT("LevelEditorViewport_Clone1")), FName(TEXT("LevelEditorViewport_Clone2")),
@@ -59,7 +58,7 @@ FAuroraViewReply DockEditorView(const TSharedPtr<FJsonValue>& Params) {
         for (const FName ViewportId : ViewportIds)
         {
             const auto Viewport = Manager->FindExistingLiveTab(ViewportId);
-            if (Viewport.IsValid() && Viewport->GetParentWindow() == Root)
+            if (Viewport.IsValid() && AuroraViewCompatibility::FindTabWindow(Viewport) == Root)
             {
                 DestinationId = ViewportId;
                 Destination = Viewport;
@@ -67,7 +66,7 @@ FAuroraViewReply DockEditorView(const TSharedPtr<FJsonValue>& Params) {
             }
         }
     }
-    if (!Destination.IsValid() || Destination->GetParentWindow() != Root)
+    if (!Destination.IsValid() || AuroraViewCompatibility::FindTabWindow(Destination) != Root)
         return FAuroraViewReply::Failure(TEXT("EditorUnavailable"), TEXT("No native destination is attached to the Editor root window"), TEXT("EDITOR_UNAVAILABLE"));
     FString Error;
     if (!Host().DockInTabManager(FName(*Id), Manager.ToSharedRef(), DestinationId, Error))

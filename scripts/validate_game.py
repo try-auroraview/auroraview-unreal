@@ -127,23 +127,12 @@ def create_project(root, package, version):
         + settings +
         f'        ExtraModuleNames.Add("{PROJECT}");\n'
         '    }\n}\n', encoding='utf-8')
-    (source / f'{PROJECT}.Build.cs').write_text(
-        'using UnrealBuildTool;\n'
-        f'public class {PROJECT} : ModuleRules {{\n'
-        f'    public {PROJECT}(ReadOnlyTargetRules Target) : base(Target) {{\n'
-        '        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;\n'
-        '        PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine", "AuroraViewRuntime" });\n'
-        '    }\n}\n', encoding='utf-8')
-    (source / f'{PROJECT}.cpp').write_text(
-        '#include "Modules/ModuleManager.h"\n'
-        f'IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, {PROJECT}, "{PROJECT}");\n', encoding='utf-8')
-    config = root / 'Config'
-    config.mkdir()
-    (config / 'DefaultEngine.ini').write_text(
-        '[/Script/EngineSettings.GameMapsSettings]\n'
-        'GameDefaultMap=/Engine/Maps/Entry\n'
-        '[/Script/Engine.RendererSettings]\n'
-        'r.DefaultFeature.AutoExposure=False\n', encoding='utf-8')
+    # The public demonstration and CI compile the same project-owned scene.
+    # Engine target settings stay generated above because UE4 and UE5 differ.
+    template = ROOT / 'examples' / PROJECT
+    inventory(template)
+    shutil.copytree(template / 'Source' / PROJECT, source, dirs_exist_ok=True)
+    shutil.copytree(template / 'Config', root / 'Config')
 
 
 def stop_owned(process):
@@ -195,7 +184,7 @@ def game_command(engine, project, archive, policy):
     command = [str(engine / 'Engine/Build/BatchFiles/RunUAT.bat'), 'BuildCookRun',
                '-project=' + str(project), '-target=' + PROJECT, '-noP4', '-platform=Win64',
                '-clientconfig=Development', '-build', '-nocompileeditor', '-cook', '-stage', '-pak', '-package',
-               '-archive', '-archivedirectory=' + str(archive), '-map=/Engine/Maps/Entry',
+               '-archive', '-prereqs', '-archivedirectory=' + str(archive), '-map=/Engine/Maps/Entry',
                '-unattended', '-utf8output']
     if policy['version'] == '4.26':
         command.append('-ubtargs=-2019 -NoHotReloadFromIDE')
@@ -478,6 +467,20 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
             if not isinstance(worlds, list) or not worlds:
                 raise build_plugin.BuildError('Live packaged Game has no world')
             result['actions']['world_list'] = worlds
+            import demo_tools
+            scene = demo_tools.find_scene(client, 'game')
+            if scene is None:
+                raise build_plugin.BuildError('The packaged public demo has no native scene')
+            before = demo_tools.scene_state(client, scene[1])
+            scene_tools = demo_tools.DemoTools(client, scene[1])
+            raised = scene_tools.set_height(150)
+            restored_scene = scene_tools.reset()
+            if (before['height'] != 0 or raised['height'] != 150
+                    or restored_scene['height'] != 0 or raised['revision'] <= before['revision']
+                    or restored_scene['revision'] <= raised['revision']):
+                raise build_plugin.BuildError('Native demo scene mutation/readback/reset failed')
+            result['actions']['demo_scene'] = {'world': scene[0], 'object': scene[1],
+                                              'before': before, 'raised': raised, 'reset': restored_scene}
             reflected = client.call('unreal.object.call', {
                 'object': '/Script/Engine.Default__KismetSystemLibrary', 'function': 'GetEngineVersion', 'args': {}})
             if not reflected.get('return_value', '').startswith(engine_version + '.'):

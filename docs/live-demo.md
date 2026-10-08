@@ -36,6 +36,8 @@ Wait for Unreal and the dashboard to report their actual identity and readiness.
 
 The rendered scene and dashboard are independent views of the same host. If an operation reports an error, use the returned message and launcher evidence; a button click alone is not proof that Unreal changed.
 
+In the Editor demo, close the dashboard tab and use **Window → Reopen AuroraView Demo** to open it in the default Editor stack again. Keep the Python launcher running. This command reuses the registered view and its tools; it does not restore the exact position of a user-dragged layout. The generic registered Tab entry and the demo's explicit reopen command have different layout policies.
+
 ## Reuse a verified build
 
 An existing plugin package can avoid a second plugin build:
@@ -46,7 +48,7 @@ python scripts/run_demo.py --engine-root "C:\Program Files\Epic Games\UE_5.7" --
 
 The launcher checks package integrity and engine identity before reuse. Copy the complete verified package and its required provenance together; DLLs from another engine minor, BuildId or architecture are incompatible.
 
-To reopen the same prepared output, pass `--reuse` with the original command. Reuse requires matching engine, source, sample-template and package identities. After changing those inputs, use a new output directory. The launcher does not replace an unrelated existing directory.
+To reopen the same prepared output, pass `--reuse` with the original command. Reuse requires matching engine, source, sample-template and package identities. Each Editor session receives a verified copy of the prepared project, so Editor configuration writes do not change the reusable build inputs. After changing those inputs, use a new output directory. The launcher does not replace an unrelated existing directory.
 
 Use `--prepare-only` to build and prepare without opening Unreal. For a bounded scripted demonstration, use `--session-seconds 60`; the launcher requests normal shutdown after that interval. An ordinary interactive launch stays open until Ctrl+C or host closure.
 

@@ -112,6 +112,26 @@ class OfflineBundleTests(unittest.TestCase):
                 package_demo.prerequisite(self.receipt)
             verify.assert_not_called()
 
+    def test_dotted_bundle_name_matches_archive_and_rejects_existing_zip(self):
+        self.output = self.root / 'AuroraView-UE5.7-fixture-Demo'
+        with patch.object(package_demo, 'ROOT', self.source), \
+                patch.object(package_demo.build_plugin, 'git_identity', return_value=self.identity), \
+                patch.object(package_demo, 'microsoft_installer', return_value=signature()):
+            result = package_demo.package_demo(self.game, self.output)
+        expected = self.root / 'AuroraView-UE5.7-fixture-Demo.zip'
+        self.assertEqual(Path(result['archive']), expected)
+        self.assertTrue(expected.is_file())
+        with zipfile.ZipFile(expected) as bundle:
+            self.assertTrue(all(name.startswith(self.output.name + '/') for name in bundle.namelist()))
+        # The exact archive collision must fail before creating a new directory.
+        other = self.root / 'AuroraView-UE5.8-fixture-Demo'
+        existing = other.with_name(other.name + '.zip')
+        existing.write_bytes(b'existing artifact')
+        with self.assertRaisesRegex(package_demo.build_plugin.BuildError, 'new demo bundle'):
+            package_demo.package_demo(self.game, other)
+        self.assertEqual(existing.read_bytes(), b'existing artifact')
+        self.assertFalse(other.exists())
+
     def test_public_bundle_excludes_debug_symbols_and_private_provenance(self):
         archive = self.game / 'PackagedGame'
         native = {

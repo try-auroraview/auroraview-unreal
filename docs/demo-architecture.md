@@ -47,6 +47,12 @@ The event example sends a browser nonce to Python and returns it with `false` an
 
 The listener is opt-in and loopback-only. Its private token grants trusted local control, and the launcher enables the native control flag for this owned sample. Tokens are not public demo configuration or a sandbox for untrusted HTML. Closing the Python provider unregisters its tools; the host reports unavailable tools instead of inventing results.
 
+## Shared DCC-MCP backend boundary
+
+The native parent-IPC client is the current compatibility transport. Its working Python tools do not establish a completed shared DCC-MCP backend integration. The integration must consume the existing backend's public invocation, tool listing and removable event subscription interfaces, with a fixed published dependency version. It must preserve MCP structured results and errors.
+
+Each panel borrows a backend session. Closing it removes only its bindings and subscriptions and cancels only its pending requests; it never stops a borrowed server or client. Unreal retains Slate/CEF ownership and GameThread dispatch. Shared Core owns portable session lifecycle. The candidate `BackendSession` contract is being developed upstream; it is not assumed to exist in the currently pinned assets or a stable Python release. No second DCC-MCP server, registry or scheduler is introduced for this boundary.
+
 ## Adapt the demo
 
 - Replace the sample scene and reflected functions in your own native module or Blueprint objects. Keep native state readback close to the action being verified.

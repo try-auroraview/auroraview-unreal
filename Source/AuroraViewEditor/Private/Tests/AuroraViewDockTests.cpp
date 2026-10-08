@@ -43,10 +43,14 @@ FAuroraViewReply AttachControlDock(FAuroraViewRuntimeModule& Module, FName Id)
 struct FDockState
 {
     int32 ReportsA = 0, ReportsB = 0;
+    int32 EchoesA = 0, EchoesB = 0;
+    int32 ReceivedReportsA = 0, ReceivedReportsB = 0;
     int32 Phase = 0;
     uint64 FirstGeneration = 0;
     bool bObservedDetailsClosed = false;
     FString FirstLayoutId;
+    FString LastWait = TEXT("initial CEF echo/report");
+    FString LastDockErrorCode, LastDockErrorMessage;
     double Deadline = 0;
 };
 class FWaitForDocked final : public IAutomationLatentCommand
@@ -59,13 +63,32 @@ public:
         auto& Runtime = FModuleManager::GetModuleChecked<FAuroraViewRuntimeModule>(TEXT("AuroraViewRuntime"));
         if (FPlatformTime::Seconds() > State->Deadline)
         {
-            Test->AddError(TEXT("Timed out waiting for actual docked CEF round trips / reopen"));
+            const auto A = Runtime.DescribeView(DockA), B = Runtime.DescribeView(DockB);
+            const auto TargetManager = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
+            const auto Root = FGlobalTabmanager::Get()->GetRootWindow();
+            const auto Owner = TargetManager.IsValid() ? TargetManager->GetOwnerTab() : TSharedPtr<SDockTab>();
+            const auto Details = TargetManager.IsValid() ? TargetManager->FindExistingLiveTab(DetailsId) : TSharedPtr<SDockTab>();
+            Test->AddError(FString::Printf(TEXT("Timed out waiting for actual docked CEF round trips / reopen: ")
+                TEXT("phase=%d wait=%s echoesA=%d echoesB=%d reportsA=%d reportsB=%d receivedReportsA=%d receivedReportsB=%d ")
+                TEXT("detailsClosedObserved=%d manager=%d root=%d owner=%d ownerAtRoot=%d details=%d detailsAtRoot=%d ")
+                TEXT("readyA=%d readyB=%d tabOpenA=%d tabOpenB=%d nativeRootAttachedA=%d nativeRootAttachedB=%d ")
+                TEXT("lastDockErrorCode=%s lastDockErrorMessage=%s"),
+                State->Phase, *State->LastWait, State->EchoesA, State->EchoesB,
+                State->ReportsA, State->ReportsB, State->ReceivedReportsA, State->ReceivedReportsB,
+                State->bObservedDetailsClosed, TargetManager.IsValid(), Root.IsValid(), Owner.IsValid(),
+                Owner.IsValid() && Root.IsValid() && Owner->GetParentWindow() == Root,
+                Details.IsValid(), Details.IsValid() && Root.IsValid() && Details->GetParentWindow() == Root,
+                A->GetBoolField(TEXT("ready")), B->GetBoolField(TEXT("ready")),
+                A->GetBoolField(TEXT("tab_open")), B->GetBoolField(TEXT("tab_open")),
+                A->GetBoolField(TEXT("attached_to_root_window")), B->GetBoolField(TEXT("attached_to_root_window")),
+                *State->LastDockErrorCode, *State->LastDockErrorMessage));
             Module.Remove(DockA); Module.Remove(DockB);
             return true;
         }
         if (State->Phase == 0)
         {
             if (State->ReportsA != 1 || State->ReportsB != 1) return false;
+            Test->AddInfo(TEXT("DockedLifecycle phase 0: both actual CEF echo/report round trips completed"));
             Test->TestTrue(TEXT("Both docked browsers are ready"), Module.IsReady(DockA) && Module.IsReady(DockB));
             Test->TestTrue(TEXT("A is an actual registered live Slate dock"),
                 FGlobalTabmanager::Get()->FindExistingLiveTab(FName(TEXT("AuroraView.View.DockAcceptanceA"))).IsValid());
@@ -96,6 +119,7 @@ public:
                 Module.Remove(DockA); Module.Remove(DockB); return true;
             }
             State->Phase = 1;
+            State->LastWait = TEXT("native Details tab removal");
             return false;
         }
         if (State->Phase == 1)
@@ -106,12 +130,16 @@ public:
             {
                 if (TargetManager->FindExistingLiveTab(DetailsId).IsValid()) return false;
                 State->bObservedDetailsClosed = true;
+                Test->AddInfo(TEXT("DockedLifecycle phase 1: native Details tab removal observed"));
                 FString Error;
                 Test->TestFalse(TEXT("Runtime refuses a closed native destination until the Editor tool opens it"),
                     Runtime.DockInTabManager(DockA, TargetManager.ToSharedRef(), DetailsId, Error));
                 Test->TestEqual(TEXT("Rejected destination preserves the current browser generation"), Module.GetGeneration(DockA), State->FirstGeneration);
             }
             const auto DockReply = AttachControlDock(Runtime, DockA);
+            State->LastWait = TEXT("registered Editor docking tool readiness");
+            State->LastDockErrorCode = DockReply.ErrorCode;
+            State->LastDockErrorMessage = DockReply.ErrorMessage;
             if (!DockReply.bOk && DockReply.ErrorCode == TEXT("EDITOR_UNAVAILABLE")) return false;
             if (!DockReply.bOk)
             {
@@ -137,6 +165,8 @@ public:
             const auto Closed = Runtime.DescribeView(DockA);
             Test->TestTrue(TEXT("Closed native state retains registration but no live presentation"), Closed->GetBoolField(TEXT("dock_registered")) && !Closed->GetBoolField(TEXT("tab_open")) && !Closed->GetBoolField(TEXT("open")) && Closed->GetNumberField(TEXT("generation")) == 0);
             State->Phase = 2;
+            State->LastWait = TEXT("native A tab removal after Close");
+            Test->AddInfo(TEXT("DockedLifecycle phase 2: native root attachment verified; A closed"));
             return false;
         }
         if (State->Phase == 2)
@@ -146,6 +176,8 @@ public:
             const auto Reply = OpenControlDock(Runtime, DockA);
             if (!Reply.bOk) Test->AddError(Reply.ErrorMessage);
             State->Phase = 3;
+            State->LastWait = TEXT("reopened CEF echo/report round trip");
+            Test->AddInfo(TEXT("DockedLifecycle phase 3: same-ID native tab reopened"));
             return false;
         }
         if (State->ReportsA != 2) return false;
@@ -154,6 +186,9 @@ public:
         const auto TargetManager = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
         const auto Destination = TargetManager.IsValid() ? TargetManager->FindExistingLiveTab(DetailsId) : TSharedPtr<SDockTab>();
         const auto DockReply = AttachControlDock(Runtime, DockA);
+        State->LastWait = TEXT("reopened registered Editor docking tool readiness");
+        State->LastDockErrorCode = DockReply.ErrorCode;
+        State->LastDockErrorMessage = DockReply.ErrorMessage;
         if (!DockReply.bOk && DockReply.ErrorCode == TEXT("EDITOR_UNAVAILABLE")) return false;
         Test->TestTrue(TEXT("Same-ID reopened browser can attach to its native Editor stack again"), TargetManager.IsValid() && DockReply.bOk);
         const auto Reattached = Runtime.DescribeView(DockA);
@@ -183,10 +218,14 @@ bool FAuroraViewDockAcceptance::RunTest(const FString&)
     for (const FName Id : { DockA, DockB })
     {
         Module.Remove(Id);
-        Module.BindCall(Id, TEXT("test.echo"), [](const TSharedPtr<FJsonValue>& Params)
-            { return FAuroraViewReply::Success(Params); });
+        Module.BindCall(Id, TEXT("test.echo"), [State, Id](const TSharedPtr<FJsonValue>& Params)
+        {
+            if (Id == DockA) ++State->EchoesA; else ++State->EchoesB;
+            return FAuroraViewReply::Success(Params);
+        });
         Module.BindCall(Id, TEXT("test.docked"), [State, Id](const TSharedPtr<FJsonValue>& Params)
         {
+            if (Id == DockA) ++State->ReceivedReportsA; else ++State->ReceivedReportsB;
             if (Params.IsValid() && Params->Type == EJson::Boolean && Params->AsBool())
             { if (Id == DockA) ++State->ReportsA; else ++State->ReportsB; }
             return FAuroraViewReply::Success(MakeShared<FJsonValueBoolean>(IsInGameThread()));

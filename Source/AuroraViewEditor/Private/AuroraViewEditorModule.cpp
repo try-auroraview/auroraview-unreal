@@ -5,18 +5,30 @@
 #include "AuroraViewCompatibility.h"
 #include "Editor.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformTime.h"
 #include "Interfaces/IPluginManager.h"
+#include "Misc/App.h"
+#include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Misc/CoreDelegates.h"
 #include "Dom/JsonObject.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/TabManager.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
 #include "LevelEditor.h"
+#include "Toolkits/AssetEditorToolkit.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/SWindow.h"
 
 namespace {
+const FName LiveDemoId(TEXT("LiveDemo"));
+bool IsDemoProject() {
+    return FCString::Strcmp(FApp::GetProjectName(), TEXT("AuroraViewGameFixture")) == 0
+        && FParse::Param(FCommandLine::Get(), TEXT("AuroraViewDemo"));
+}
 FAuroraViewRuntimeModule& Host() {
     return FModuleManager::LoadModuleChecked<FAuroraViewRuntimeModule>(TEXT("AuroraViewRuntime"));
 }
@@ -58,6 +70,86 @@ struct FAuroraViewEditorModule::FImpl {
     TSharedPtr<FAuroraViewNativeShowcase> Showcase;
     IConsoleObject* DockCommand = nullptr;
     IConsoleObject* FixtureCommand = nullptr;
+    TSharedPtr<FExtender> DemoMenuExtender;
+    TWeakPtr<FExtensibilityManager> DemoMenuManager;
+    AuroraViewCompatibility::FTickerHandle DemoDockTick;
+    uint64 DemoDockGeneration = 0;
+    double DemoDockDeadline = 0;
+    bool bDemoDockPending = false;
+
+    bool HasDemo() const {
+        return GEditor && IsDemoProject()
+            && FModuleManager::Get().IsModuleLoaded(TEXT("AuroraViewGameFixture"))
+            && Host().DescribeView(LiveDemoId)->GetBoolField(TEXT("dock_registered"));
+    }
+    bool CanReopenDemo() const { return !bDemoDockPending && HasDemo(); }
+    void BuildDemoMenu(FMenuBuilder& Menu) {
+        if (!HasDemo()) return;
+        Menu.BeginSection(TEXT("AuroraViewDemo"), FText::FromString(TEXT("AuroraView")));
+        Menu.AddMenuEntry(FText::FromString(TEXT("Reopen AuroraView Demo")),
+            FText::FromString(TEXT("Reopen the registered demo panel and attach it to the default Editor stack.")),
+            FSlateIcon(), FUIAction(FExecuteAction::CreateRaw(this, &FImpl::ReopenDemo),
+                FCanExecuteAction::CreateRaw(this, &FImpl::CanReopenDemo)));
+        Menu.EndSection();
+    }
+    bool TickDemoDock(float) {
+        if (!bDemoDockPending) return false;
+        if (!HasDemo() || Host().GetGeneration(LiveDemoId) != DemoDockGeneration) {
+            bDemoDockPending = false;
+            DemoDockTick.Reset();
+            UE_LOG(LogTemp, Display, TEXT("AuroraView demo docking cancelled because its presentation was closed or replaced"));
+            return false;
+        }
+        const auto Args = MakeShared<FJsonObject>();
+        Args->SetStringField(TEXT("id"), LiveDemoId.ToString());
+        const auto Reply = DockEditorView(MakeShared<FJsonValueObject>(Args));
+        if (!Reply.bOk && Reply.ErrorCode == TEXT("EDITOR_UNAVAILABLE")
+            && FPlatformTime::Seconds() < DemoDockDeadline) return true;
+        bDemoDockPending = false;
+        DemoDockTick.Reset();
+        if (!Reply.bOk)
+            UE_LOG(LogTemp, Error, TEXT("AuroraView demo could not attach to the Editor root: %s: %s"),
+                *Reply.ErrorCode, *Reply.ErrorMessage);
+        else
+            UE_LOG(LogTemp, Display, TEXT("AuroraView demo attached to the default Editor stack; generation %llu"),
+                static_cast<unsigned long long>(DemoDockGeneration));
+        return false;
+    }
+    void ReopenDemo() {
+        if (!CanReopenDemo()) return;
+        FString Error;
+        if (!Host().OpenDocked(LiveDemoId, Error)) {
+            UE_LOG(LogTemp, Error, TEXT("AuroraView demo could not reopen: %s"), *Error);
+            return;
+        }
+        DemoDockGeneration = Host().GetGeneration(LiveDemoId);
+        DemoDockDeadline = FPlatformTime::Seconds() + 30.0;
+        bDemoDockPending = true;
+        // One bounded request uses the existing Core ticker. A close/replacement
+        // cancels it, and repeated menu activation cannot create parallel work.
+        if (TickDemoDock(0.0f))
+            DemoDockTick = AuroraViewCompatibility::FTicker::GetCoreTicker().AddTicker(
+                FTickerDelegate::CreateRaw(this, &FImpl::TickDemoDock), 0.1f);
+    }
+    void RegisterDemoMenu() {
+        if (!IsDemoProject()) return;
+        const auto Manager = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetMenuExtensibilityManager();
+        if (!Manager.IsValid()) return;
+        DemoMenuExtender = MakeShared<FExtender>();
+        DemoMenuExtender->AddMenuExtension(TEXT("WindowLayout"), EExtensionHook::Before, nullptr,
+            FMenuExtensionDelegate::CreateRaw(this, &FImpl::BuildDemoMenu));
+        Manager->AddExtender(DemoMenuExtender);
+        DemoMenuManager = Manager;
+    }
+    void RemoveDemoMenu() {
+        bDemoDockPending = false;
+        AuroraViewCompatibility::FTicker::GetCoreTicker().RemoveTicker(DemoDockTick);
+        DemoDockTick.Reset();
+        const auto Manager = DemoMenuManager.Pin();
+        if (Manager.IsValid() && DemoMenuExtender.IsValid()) Manager->RemoveExtender(DemoMenuExtender);
+        DemoMenuExtender.Reset();
+        DemoMenuManager.Reset();
+    }
 };
 FAuroraViewEditorModule::FAuroraViewEditorModule() = default;
 FAuroraViewEditorModule::~FAuroraViewEditorModule() = default;
@@ -65,6 +157,9 @@ void FAuroraViewEditorModule::StartupModule() {
     Host();
     if (IsRunningCommandlet()) return;
     Impl = MakeUnique<FImpl>();
+    // Register before the UE4 main menu captures its combined extenders. The
+    // entry itself is built only after the isolated demo has registered its view.
+    Impl->RegisterDemoMenu();
     // Default loading makes the preparation UCLASS available to UE4 commandlets.
     // Editor-only UI registration still waits until the engine is initialized.
     if (GEditor) InitializeShowcase();
@@ -92,6 +187,7 @@ void FAuroraViewEditorModule::InitializeShowcase() {
 }
 void FAuroraViewEditorModule::ShutdownModule() {
     if (!Impl) return;
+    Impl->RemoveDemoMenu();
     Host().UnregisterTool(TEXT("editor.view.dock"));
     AuroraViewCompatibility::PostEngineInit().Remove(Impl->PostEngineInit);
     if (Impl->Showcase.IsValid()) Impl->Showcase->Stop();

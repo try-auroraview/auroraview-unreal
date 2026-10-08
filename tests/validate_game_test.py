@@ -7,6 +7,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -480,6 +481,65 @@ class GameExecutionPolicyTests(unittest.TestCase):
                 self.assertIn('-Windowed', arguments)
                 self.assertNotIn('-NullRHI', arguments)
                 self.assertNotIn('-RenderOffscreen', arguments)
+
+
+class GameCleanupTests(unittest.TestCase):
+    def test_failed_forced_wait_preserves_host_failure_and_finalizes_redacted_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            token = 'private-cleanup-fixture-token-' * 3
+            process = Mock(pid=123, returncode=None)
+            process.poll.return_value = None
+            process.wait.side_effect = validator.subprocess.TimeoutExpired(['Game.exe', token], 15)
+            client = Mock(identity={'pid': 123})
+            client.call.return_value = {}  # Reject the live identity before any mutation.
+            client.close.side_effect = TimeoutError('Client cleanup token=' + token)
+            api = SimpleNamespace(Client=Mock(return_value=client), ProtocolError=ValueError, RemoteError=RuntimeError)
+
+            def popen(_command, **kwargs):
+                kwargs['stdout'].write(token.encode())
+                (evidence / 'Game.log').write_text('Host command token=' + token, encoding='utf-8')
+                return process
+
+            with patch.dict(sys.modules, {'auroraview_unreal': api}), \
+                    patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}), \
+                    patch.object(validator.secrets, 'token_urlsafe', return_value=token), \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
+                    patch.object(validator.subprocess, 'Popen', popen), \
+                    patch.object(validator.subprocess, 'run', return_value=SimpleNamespace(returncode=1)):
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, 'Live Game engine identity'):
+                    validator.run_game(evidence / 'Game.exe', evidence, '5.7', 30)
+
+            process.wait.assert_called_once_with(timeout=15)
+            result = json.loads((evidence / 'game-process.json').read_text())
+            self.assertIn('Live Game engine identity', result['error'])
+            self.assertEqual(len(result['cleanup_errors']), 2)
+            self.assertTrue(result['forced_cleanup'])
+            self.assertIsNone(result['exit_code'])
+            self.assertTrue(result['completed_utc'])
+            for path in evidence.iterdir():
+                self.assertNotIn(token, path.read_text())
+
+    def test_launch_exception_does_not_expose_its_command_token(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            token = 'private-startup-fixture-token-' * 3
+            api = SimpleNamespace(Client=Mock(), ProtocolError=ValueError, RemoteError=RuntimeError)
+            failure = validator.subprocess.TimeoutExpired(['Game.exe', '-AuroraViewHostToken=' + token], 5)
+            with patch.dict(sys.modules, {'auroraview_unreal': api}), \
+                    patch.object(validator.secrets, 'token_urlsafe', return_value=token), \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
+                    patch.object(validator.subprocess, 'Popen', side_effect=failure):
+                with self.assertRaises(validator.build_plugin.BuildError) as raised:
+                    validator.run_game(evidence / 'Game.exe', evidence, '5.7', 30)
+            self.assertNotIn(token, str(raised.exception))
+            self.assertTrue(raised.exception.__suppress_context__)
+            result = json.loads((evidence / 'game-process.json').read_text())
+            self.assertIn('<redacted>', result['error'])
+            self.assertTrue(result['completed_utc'])
+            self.assertNotIn(token, json.dumps(result))
 
 
 if __name__ == '__main__':

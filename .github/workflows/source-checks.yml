@@ -37,4 +37,4 @@ jobs:
         run: |
           echo '### Source checks only' >> "$GITHUB_STEP_SUMMARY"
           echo 'This job does not run UHT, UBT, CEF, or the Unreal Editor.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Native support remains experimental and unverified.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Native results are recorded by the separate Unreal workflow and host acceptance receipts.' >> "$GITHUB_STEP_SUMMARY"

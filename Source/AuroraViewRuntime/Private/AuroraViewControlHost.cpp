@@ -186,10 +186,18 @@ struct FAuroraViewControlHost::FImpl
         bool bValid = false;
         Address->SetIp(TEXT("127.0.0.1"), bValid);
         Address->SetPort(Port);
-        if (!Listener || !bValid || !Listener->SetNonBlocking(true) || !Listener->Bind(*Address) || !Listener->Listen(MaxClients))
+        const TCHAR* FailureStage = nullptr;
+        if (!Listener) FailureStage = TEXT("create_socket");
+        else if (!bValid) FailureStage = TEXT("loopback_address");
+        else if (!Listener->SetNonBlocking(true)) FailureStage = TEXT("nonblocking");
+        else if (!Listener->Bind(*Address)) FailureStage = TEXT("bind");
+        else if (!Listener->Listen(MaxClients)) FailureStage = TEXT("listen");
+        if (FailureStage)
         {
+            const auto SocketError = Sockets->GetLastErrorCode();
             if (Listener) { Listener->Close(); Sockets->DestroySocket(Listener); Listener = nullptr; }
-            UE_LOG(LogAuroraViewControl, Error, TEXT("AuroraView loopback host could not bind port %d"), Port);
+            UE_LOG(LogAuroraViewControl, Error, TEXT("AuroraView loopback host startup failed: stage=%s port=%d socket_error=%d"),
+                FailureStage, Port, static_cast<int32>(SocketError));
             return;
         }
         UE_LOG(LogAuroraViewControl, Display, TEXT("AuroraView parent IPC v1 ready; pid=%u port=%d context=%s"),

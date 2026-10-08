@@ -327,8 +327,8 @@ def launch(prepared, html, output, session_seconds):
             result['interrupted'] = True
     except Exception as error:
         with lock:
-            result.update(status='failed', error=str(error))
-        raise
+            result.update(status='failed', error=str(error).replace(token, '<redacted>'))
+        raise build_plugin.BuildError(result['error']) from None
     finally:
         cleanup_errors = []
         if tools:
@@ -354,7 +354,14 @@ def launch(prepared, html, output, session_seconds):
                 forced = False
             except subprocess.TimeoutExpired:
                 forced = True
-                validate_game.stop_owned(process)
+                try:
+                    validate_game.stop_owned(process)
+                except Exception as error:
+                    cleanup_errors.append('Process cleanup: ' + str(error))
+                exit_code = process.returncode
+            except Exception as error:
+                cleanup_errors.append('Host wait: ' + str(error))
+                forced = process.poll() is None
                 exit_code = process.returncode
             with lock:
                 result.update(exit_code=exit_code, forced_cleanup=forced)

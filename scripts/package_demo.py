@@ -107,7 +107,8 @@ def package_demo(game_run, output):
     for path in [ROOT, game_run]:
         if build_plugin.inside(output, path) or build_plugin.inside(path, output):
             raise build_plugin.BuildError('Bundle output must be separate from source and Game inputs')
-    if output.exists() or output.with_suffix('.zip').exists():
+    zip_path = output.with_name(output.name + '.zip')
+    if output.exists() or zip_path.exists():
         raise build_plugin.BuildError('Use a new demo bundle output')
     receipt_path = game_run / 'evidence/game-validation.json'
     receipt = build_plugin.read_json(receipt_path)
@@ -187,7 +188,6 @@ def package_demo(game_run, output):
                     created_utc=datetime.now(timezone.utc).isoformat(),
                     files_sha256=validate_game.inventory(output))
     (output / 'demo-package.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-    zip_path = output.with_suffix('.zip')
     with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
         for path in sorted(output.rglob('*')):
             if path.is_file():

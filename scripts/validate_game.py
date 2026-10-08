@@ -435,6 +435,7 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
               'execution_mode': execution_mode}
     process = None
     client = None
+    failed = False
     try:
         with console_log.open('wb') as stream:
             startup = subprocess.STARTUPINFO()
@@ -564,20 +565,41 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
                 raise build_plugin.BuildError('Game did not exit normally after host shutdown') from error
             if result['exit_code'] != 0:
                 raise build_plugin.BuildError('Game exited with a nonzero code after validation')
+    except Exception as error:
+        failed = True
+        result['error'] = str(error).replace(token, '<redacted>')
+        # A subprocess exception can include the launch command and its token.
+        raise build_plugin.BuildError(result['error']) from None
     finally:
+        cleanup_errors = []
         if client is not None:
-            client.close()
+            try:
+                client.close()
+            except Exception as error:
+                cleanup_errors.append('Client cleanup: ' + str(error).replace(token, '<redacted>'))
         if process is not None:
             result['forced_cleanup'] = process.poll() is None
-            stop_owned(process)
+            try:
+                stop_owned(process)
+            except Exception as error:
+                cleanup_errors.append('Process cleanup: ' + str(error).replace(token, '<redacted>'))
             result['exit_code'] = process.returncode
         # Unreal logs its command line automatically. Never preserve the token.
         for path in [game_log, console_log]:
-            if path.is_file():
-                content = path.read_bytes()
-                path.write_bytes(content.replace(token.encode('utf-8'), b'<redacted>'))
+            try:
+                if path.is_file():
+                    content = path.read_bytes()
+                    path.write_bytes(content.replace(token.encode('utf-8'), b'<redacted>'))
+            except OSError as error:
+                cleanup_errors.append('Log redaction: ' + str(error).replace(token, '<redacted>'))
+        if cleanup_errors:
+            result['cleanup_errors'] = cleanup_errors
+            if not failed:
+                result['error'] = 'Packaged Game cleanup failed: ' + '; '.join(cleanup_errors)
         result['completed_utc'] = now()
         write_json(evidence / 'game-process.json', result)
+        if cleanup_errors and not failed:
+            raise build_plugin.BuildError(result['error']) from None
     return result
 
 

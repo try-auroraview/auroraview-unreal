@@ -191,6 +191,46 @@ class DemoLaunchGuards(unittest.TestCase):
         self.assertEqual(json.loads(receipt.read_text())['status'], 'failed')
         self.assertNotIn(token, (receipt.parent / 'console.log').read_text())
 
+    def test_failed_forced_wait_keeps_original_failure_and_redacts_all_evidence(self):
+        output = self.root / 'Run'
+        output.mkdir()
+        html = self.root / 'demo.html'
+        html.write_text('<h1>Demo</h1>', encoding='utf-8')
+        token = 'private-forced-wait-fixture-' * 3
+        process = Mock(pid=123, returncode=None)
+        process.poll.return_value = None
+        process.wait.side_effect = [run_demo.subprocess.TimeoutExpired(['Game.exe', token], 60),
+                                    run_demo.subprocess.TimeoutExpired(['Game.exe', token], 15)]
+
+        def popen(command, **kwargs):
+            kwargs['stdout'].write(token.encode())
+            log = Path(next(value[len('-abslog='):] for value in command if value.startswith('-abslog=')))
+            log.write_text('Host command token=' + token, encoding='utf-8')
+            return process
+
+        with patch.object(run_demo, 'Client', side_effect=run_demo.build_plugin.BuildError('Initial browser failure ' + token)), \
+                patch.dict(run_demo.os.environ, {'SystemRoot': 'C:\\Windows'}), \
+                patch.object(run_demo.subprocess, 'Popen', popen), \
+                patch.object(run_demo.subprocess, 'run', return_value=Mock(returncode=1)), \
+                patch.object(run_demo.secrets, 'token_urlsafe', return_value=token):
+            with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'Initial browser failure') as raised:
+                run_demo.launch(dict(mode='game', executable=str(self.root / 'Game.exe'), engine_version='5.7'),
+                                html, output, 0)
+
+        self.assertNotIn(token, str(raised.exception))
+        self.assertTrue(raised.exception.__suppress_context__)
+        self.assertEqual([call.kwargs for call in process.wait.call_args_list], [{'timeout': 60}, {'timeout': 15}])
+        receipt = next(output.glob('Session-*/session.json'))
+        result = json.loads(receipt.read_text())
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('Initial browser failure', result['error'])
+        self.assertIn('Process cleanup', result['cleanup_errors'][0])
+        self.assertTrue(result['forced_cleanup'])
+        self.assertIsNone(result['exit_code'])
+        self.assertTrue(result['completed_utc'])
+        for path in receipt.parent.iterdir():
+            self.assertNotIn(token, path.read_text())
+
 
 if __name__ == '__main__':
     unittest.main()

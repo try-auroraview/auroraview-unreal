@@ -1,5 +1,6 @@
 """Packaged Game validation guards; synthetic files only, never native evidence."""
 import importlib.util
+import configparser
 import json
 from pathlib import Path
 import struct
@@ -231,6 +232,59 @@ class PackagedGameGuards(unittest.TestCase):
                 self.assertEqual('BuildSettingsVersion.Latest' in text, version.startswith('5.'))
                 self.assertEqual('EngineIncludeOrderVersion.Latest' in text, version.startswith('5.'))
                 self.assertEqual('BuildSettingsVersion.V2' in text, version == '4.26')
+
+    def test_cook_selects_the_private_cache_graph_on_every_supported_engine(self):
+        for version in validator.preflight_engine.SUPPORTED_VERSIONS:
+            with self.subTest(version=version):
+                major, minor = map(int, version.split('.'))
+                policy = validator.preflight_engine.engine_policy({'MajorVersion': major, 'MinorVersion': minor})
+                command = validator.game_command(self.engine, self.project / 'Fixture.uproject', self.archive, policy)
+                self.assertEqual([arg for arg in command if arg.startswith('-AdditionalCookerOptions=')],
+                                 ['-AdditionalCookerOptions=-ddc=AuroraViewValidationDDC'])
+
+    def test_cache_graph_is_portable_writable_and_has_no_shared_store_or_path_overrides(self):
+        package = self.root / 'CachePackage'
+        package.mkdir()
+        for version in validator.preflight_engine.SUPPORTED_VERSIONS:
+            with self.subTest(version=version):
+                project = self.root / ('cache-' + version)
+                with patch.dict(validator.os.environ, {'UE-LocalDataCachePath': str(self.root / 'foreign-cache')}):
+                    receipt = validator.create_project(project, package, version)
+                config = project / 'Config/DefaultEngine.ini'
+                text = config.read_text(encoding='utf-8')
+                parser = configparser.RawConfigParser(strict=False)
+                parser.optionxform = str
+                parser.read_string(text)
+                if version == '5.8':
+                    self.assertEqual(parser['DerivedDataCacheGraphs']['AuroraViewValidationDDC'],
+                                     '(AuroraViewValidationLocal)')
+                    nodes = dict(parser['DerivedDataCacheStores'])
+                    self.assertEqual(set(nodes), {'AuroraViewValidationLocal'})
+                    local = nodes['AuroraViewValidationLocal']
+                else:
+                    nodes = dict(parser['AuroraViewValidationDDC'])
+                    self.assertEqual(set(nodes), {'Root', 'AsyncPut', 'Local'})
+                    self.assertEqual(nodes['Root'], '(Type=KeyLength,Length=120,Inner=AsyncPut)')
+                    self.assertEqual(nodes['AsyncPut'], '(Type=AsyncPut,Inner=Local)')
+                    self.assertIn('DeleteOnly=false', nodes['Local'])
+                    local = nodes['Local']
+                self.assertIn('Type=FileSystem', local)
+                self.assertIn('ReadOnly=false', local)
+                self.assertIn('Path="%GAMEDIR%DerivedDataCache/AuroraViewValidation"', local)
+                for external in ['Zen', 'Shared', 'Cloud', 'Override']:
+                    self.assertNotIn(external, '\n'.join(nodes.values()))
+                self.assertNotIn(str(project), text)
+                cache = project / 'DerivedDataCache/AuroraViewValidation'
+                self.assertTrue(cache.is_dir())
+                self.assertEqual(list(cache.iterdir()), [])
+                self.assertEqual(receipt['directory'], str(cache))
+                self.assertEqual(receipt['config_sha256'], validator.build_plugin.sha256(config))
+                self.assertEqual(receipt['writable_probe'], 'pass')
+                self.assertFalse((self.root / 'foreign-cache').exists())
+                packaging = configparser.RawConfigParser(strict=False)
+                packaging.read(project / 'Config/DefaultGame.ini', encoding='utf-8')
+                if version.startswith('5.'):
+                    self.assertFalse(packaging.getboolean('/Script/UnrealEd.ProjectPackagingSettings', 'bUseZenStore'))
 
 
 class StagedExecutableGuards(unittest.TestCase):

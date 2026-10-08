@@ -118,7 +118,7 @@ def prepare(engine, package, output, mode, timeout, reuse):
         return prepared
     project = output / 'Project'
     project.mkdir()
-    validate_game.create_project(project, package, version)
+    cache = validate_game.create_project(project, package, version)
     uproject = project / f'{validate_game.PROJECT}.uproject'
     environment = os.environ.copy()
     environment.update(build_plugin.build_environment(policy, output))
@@ -150,7 +150,7 @@ def prepare(engine, package, output, mode, timeout, reuse):
                     engine_root=str(engine), engine_version=version, package=str(package),
                     build_receipt=str(receipt_path), build_receipt_sha256=build_plugin.sha256(receipt_path),
                     uproject=str(uproject), executable=str(executable), executable_sha256=build_plugin.sha256(executable), stage=stage,
-                    products_sha256=products, ubt_configuration_sha256=before_config,
+                    products_sha256=products, derived_data_cache=cache, ubt_configuration_sha256=before_config,
                     ubt_configuration_after_sha256=after_config, completed_utc=now())
     save(manifest_path, prepared)
     return prepared
@@ -257,6 +257,8 @@ def launch(prepared, html, output, session_seconds, shared_tools=False):
     command = [str(executable)]
     if mode == 'editor':
         command += [str(uproject), '/Engine/Maps/Entry']
+        if prepared.get('derived_data_cache', {}).get('graph') == validate_game.DDC_GRAPH:
+            command += ['-ddc=' + validate_game.DDC_GRAPH]
     command += ['-AuroraViewDemo', '-AuroraViewAllowControl', '-AuroraViewHostPort=' + str(port),
                 '-AuroraViewHostToken=' + token, '-NoSplash', '-NoSound', '-NoLiveCoding',
                 '-Windowed', '-ResX=1000', '-ResY=720', '-d3d11', '-NoVSync',
@@ -267,6 +269,11 @@ def launch(prepared, html, output, session_seconds, shared_tools=False):
                   browser_ready=False, events=[], exit_code=None, forced_cleanup=False)
     if uproject:
         result['uproject'] = str(uproject)
+        if prepared.get('derived_data_cache', {}).get('graph') == validate_game.DDC_GRAPH:
+            result['derived_data_cache'] = dict(
+                graph=validate_game.DDC_GRAPH,
+                expected_directory=str(uproject.parent / validate_game.DDC_DIRECTORY),
+                writable_probe='not_run', native_usage='not_verified')
     lock = threading.Lock()
 
     def record(kind, data):

@@ -18,7 +18,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 function Resolve-Executable([string]$Name) {
     $command = Get-Command -Name $Name -CommandType Application -ErrorAction Stop
-    return $command.Source
+    return @($command)[0].Source
 }
 
 function Invoke-Checked([string]$Executable, [string[]]$Arguments) {

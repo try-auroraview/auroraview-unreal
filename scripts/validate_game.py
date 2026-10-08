@@ -88,6 +88,51 @@ def verify_inputs(engine, package):
     return receipt_path, receipt, policy
 
 
+DDC_GRAPH = 'AuroraViewValidationDDC'
+DDC_DIRECTORY = 'DerivedDataCache/AuroraViewValidation'
+
+
+def configure_project_cache(project, version):
+    """Select only a writable project-owned file cache, without shared overrides."""
+    if version not in preflight_engine.SUPPORTED_VERSIONS:
+        raise build_plugin.BuildError('Unsupported cache configuration version: ' + version)
+    local = ('Type=FileSystem,ReadOnly=false,Clean=false,Flush=false,DeleteUnused=false,'
+             'Path="%GAMEDIR%' + DDC_DIRECTORY + '"')
+    if version == '5.8':
+        graph = ('\n[DerivedDataCacheGraphs]\n' + DDC_GRAPH + '=(AuroraViewValidationLocal)\n'
+                 '[DerivedDataCacheStores]\nAuroraViewValidationLocal=(' + local + ')\n')
+        syntax = 'cache_stores'
+    else:
+        graph = ('\n[' + DDC_GRAPH + ']\nRoot=(Type=KeyLength,Length=120,Inner=AsyncPut)\n'
+                 'AsyncPut=(Type=AsyncPut,Inner=Local)\nLocal=(' + local + ',DeleteOnly=false)\n')
+        syntax = 'backend_graph'
+    config = project / 'Config/DefaultEngine.ini'
+    config.write_text(config.read_text(encoding='utf-8') + graph, encoding='utf-8')
+    # UE 5.8 enables the separate cooking ZenStore by default. Keep this
+    # disposable/offline fixture independent of that shared service as well.
+    if version.startswith('5.'):
+        packaging = project / 'Config/DefaultGame.ini'
+        packaging.write_text(packaging.read_text(encoding='utf-8') +
+                             '\n[/Script/UnrealEd.ProjectPackagingSettings]\nbUseZenStore=False\n',
+                             encoding='utf-8')
+    cache = project / DDC_DIRECTORY
+    cache.mkdir(parents=True)
+    probe = cache / ('.write-probe-' + secrets.token_hex(8))
+    created = False
+    try:
+        with probe.open('xb') as stream:
+            created = True
+            stream.write(b'AuroraView validation cache')
+        if probe.read_bytes() != b'AuroraView validation cache':
+            raise build_plugin.BuildError('Project cache readback failed')
+    finally:
+        if created:
+            probe.unlink()
+    return dict(graph=DDC_GRAPH, syntax=syntax, directory=str(cache),
+                config_sha256=build_plugin.sha256(config), writable_probe='pass',
+                shared_cache=False, zen=False, zen_store=False)
+
+
 def create_project(root, package, version):
     # Match the installed engine defaults instead of overriding a shared Editor
     # build environment. These target settings do not exist in UE 4.18.
@@ -133,6 +178,7 @@ def create_project(root, package, version):
     inventory(template)
     shutil.copytree(template / 'Source' / PROJECT, source, dirs_exist_ok=True)
     shutil.copytree(template / 'Config', root / 'Config')
+    return configure_project_cache(root, version)
 
 
 def stop_owned(process):
@@ -185,7 +231,7 @@ def game_command(engine, project, archive, policy):
                '-project=' + str(project), '-target=' + PROJECT, '-noP4', '-platform=Win64',
                '-clientconfig=Development', '-build', '-nocompileeditor', '-cook', '-stage', '-pak', '-package',
                '-archive', '-prereqs', '-archivedirectory=' + str(archive), '-map=/Engine/Maps/Entry',
-               '-unattended', '-utf8output']
+               '-unattended', '-utf8output', '-AdditionalCookerOptions=-ddc=' + DDC_GRAPH]
     if policy['version'] == '4.26':
         command.append('-ubtargs=-2019 -NoHotReloadFromIDE')
     elif not policy['version'].startswith('4.'):
@@ -625,7 +671,8 @@ def validate(engine_root, package_root, output_root, timeout, rendered_browser=F
     try:
         project = output / 'Project'
         project.mkdir()
-        create_project(project, package, policy['version'])
+        cache = create_project(project, package, policy['version'])
+        result['derived_data_cache'] = cache
         verify_package(project / 'Plugins/AuroraView', package_receipt['package']['files_sha256'])
         archive = output / 'PackagedGame'
         command = game_command(engine, project / f'{PROJECT}.uproject', archive, policy)

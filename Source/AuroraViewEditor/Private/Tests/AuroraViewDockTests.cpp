@@ -27,6 +27,17 @@ FAuroraViewReply OpenControlDock(FAuroraViewRuntimeModule& Module, FName Id, con
     check(bCompleted);
     return Reply;
 }
+FAuroraViewReply AttachControlDock(FAuroraViewRuntimeModule& Module, FName Id)
+{
+    auto Args = MakeShared<FJsonObject>();
+    Args->SetStringField(TEXT("id"), Id.ToString());
+    FAuroraViewReply Reply;
+    bool bCompleted = false;
+    Module.CallTool(TEXT("editor.view.dock"), MakeShared<FJsonValueObject>(Args),
+        [&Reply, &bCompleted](FAuroraViewReply Value) { Reply = MoveTemp(Value); bCompleted = true; });
+    check(bCompleted);
+    return Reply;
+}
 struct FDockState
 {
     int32 ReportsA = 0, ReportsB = 0;
@@ -74,10 +85,10 @@ public:
             Test->TestTrue(TEXT("Control open rejects changing live dock content"), !Changed.bOk && Changed.ErrorCode == TEXT("VIEW_OPEN_FAILED"));
             Test->TestEqual(TEXT("Rejected rebind preserves the current browser"), Module.GetGeneration(DockA), State->FirstGeneration);
             const auto TargetManager = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
-            FString DockError;
-            if (!TargetManager.IsValid() || !Runtime.DockInTabManager(DockA, TargetManager.ToSharedRef(), FName(TEXT("LevelEditorSelectionDetails")), DockError))
+            const auto DockReply = AttachControlDock(Runtime, DockA);
+            if (!TargetManager.IsValid() || !DockReply.bOk)
             {
-                Test->AddError(TEXT("Native Editor root attachment failed: ") + DockError);
+                Test->AddError(TEXT("Native Editor root attachment failed: ") + DockReply.ErrorMessage);
                 Module.Remove(DockA); Module.Remove(DockB); return true;
             }
             const auto Attached = Runtime.DescribeView(DockA);
@@ -110,9 +121,8 @@ public:
         const uint64 ReopenedGeneration = Module.GetGeneration(DockA);
         const auto TargetManager = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
         const auto Destination = TargetManager.IsValid() ? TargetManager->FindExistingLiveTab(FName(TEXT("LevelEditorSelectionDetails"))) : TSharedPtr<SDockTab>();
-        FString DockError;
         Test->TestTrue(TEXT("Same-ID reopened browser can attach to its native Editor stack again"),
-            TargetManager.IsValid() && Runtime.DockInTabManager(DockA, TargetManager.ToSharedRef(), FName(TEXT("LevelEditorSelectionDetails")), DockError));
+            TargetManager.IsValid() && AttachControlDock(Runtime, DockA).bOk);
         const auto Reattached = Runtime.DescribeView(DockA);
         Test->TestTrue(TEXT("Reopened browser is actually attached to the Editor root"), Reattached->GetBoolField(TEXT("attached_to_root_window")));
         Test->TestEqual(TEXT("Reattaching does not restart the reopened browser"), Module.GetGeneration(DockA), ReopenedGeneration);

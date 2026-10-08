@@ -257,7 +257,7 @@ def launch(prepared, html, output, session_seconds):
             'presentation': 'docked' if mode == 'editor' else 'floating',
             'html': html.read_text(encoding='utf-8')})
         if mode == 'editor':
-            client.call('unreal.editor.view.dock', {'id': 'LiveDemo'})
+            client.call('editor.view.dock', {'id': 'LiveDemo'})
         if not tools.browser_ready.wait(45):
             raise build_plugin.BuildError('The real CEF dashboard did not finish its Core/Python handshake')
         presentation = client.call('auroraview.view.describe', {'id': 'LiveDemo'})

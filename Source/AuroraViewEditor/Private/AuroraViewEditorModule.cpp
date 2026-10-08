@@ -51,7 +51,8 @@ void FAuroraViewEditorModule::StartupModule() {
 }
 void FAuroraViewEditorModule::InitializeShowcase() {
     if (!Impl || Impl->Showcase.IsValid()) return;
-    Host().RegisterTool(TEXT("unreal.editor.view.dock"), DockEditorView);
+    if (!Host().RegisterTool(TEXT("editor.view.dock"), DockEditorView))
+        UE_LOG(LogTemp, Error, TEXT("AuroraView could not register the Editor docking tool"));
     FString Html, Error;
     const auto Plugin = IPluginManager::Get().FindPlugin(TEXT("AuroraView"));
     Impl->Showcase = MakeShared<FAuroraViewNativeShowcase>(*this);
@@ -70,7 +71,7 @@ void FAuroraViewEditorModule::InitializeShowcase() {
 }
 void FAuroraViewEditorModule::ShutdownModule() {
     if (!Impl) return;
-    Host().UnregisterTool(TEXT("unreal.editor.view.dock"));
+    Host().UnregisterTool(TEXT("editor.view.dock"));
     AuroraViewCompatibility::PostEngineInit().Remove(Impl->PostEngineInit);
     if (Impl->Showcase.IsValid()) Impl->Showcase->Stop();
     if (Impl->DockCommand) IConsoleManager::Get().UnregisterConsoleObject(Impl->DockCommand, false);

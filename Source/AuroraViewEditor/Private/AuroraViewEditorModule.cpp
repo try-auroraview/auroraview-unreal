@@ -108,11 +108,15 @@ struct FAuroraViewEditorModule::FImpl {
         bDemoDockPending = false;
         DemoDockTick.Reset();
         if (!Reply.bOk)
+        {
             UE_LOG(LogTemp, Error, TEXT("AuroraView demo could not attach to the Editor root: %s: %s"),
                 *Reply.ErrorCode, *Reply.ErrorMessage);
+        }
         else
+        {
             UE_LOG(LogTemp, Display, TEXT("AuroraView demo attached to the default Editor stack; generation %llu"),
                 static_cast<unsigned long long>(DemoDockGeneration));
+        }
         return false;
     }
     void ReopenDemo() {

@@ -5,7 +5,7 @@ public class AuroraViewEditor : ModuleRules {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private"));
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Json", "AuroraViewRuntime" });
-        PrivateDependencyModuleNames.AddRange(new[] { "Engine", "UnrealEd", "Slate", "SlateCore", "WebBrowser", "Projects", "ContentBrowser", "SceneOutliner", "InputCore", "AssetRegistry" });
+        PrivateDependencyModuleNames.AddRange(new[] { "Engine", "UnrealEd", "Slate", "SlateCore", "WebBrowser", "Projects", "ContentBrowser", "SceneOutliner", "InputCore", "AssetRegistry", "LevelEditor" });
         PrivateDependencyModuleNames.Add("EditorStyle");
     }
 }

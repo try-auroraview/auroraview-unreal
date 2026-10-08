@@ -1,6 +1,6 @@
 # Run the AuroraView Unreal demo
 
-This demo combines a real Unreal scene, a native CEF/Slate dashboard and an external Python tool provider. The same dashboard works in the sample Editor project and a cooked Development game. It is separate from the historical [native showcase](native-showcase.md), which covers more advanced Editor docking and drag/drop work.
+This demo combines a real Unreal scene, a native CEF/Slate dashboard and an external Python tool provider. Editor mode uses a native `SDockTab`, which can be attached to the Editor layout. The cooked Development game uses a separate native Slate browser window. The same Core/Python tools work in both contexts. The [native showcase](native-showcase.md) covers additional Editor workspace and drag/drop work.
 
 ## Run from source
 
@@ -52,7 +52,7 @@ Use `--prepare-only` to build and prepare without opening Unreal. For a bounded 
 
 ## Run an offline game bundle
 
-A complete offline bundle includes the cooked game, its native browser resources, this launcher and the stdlib-only Python client. It needs Windows x64 and Python 3.9+; Unreal and Visual Studio are not required on the receiving machine.
+A complete offline bundle includes the cooked game, its native browser resources, this launcher and the stdlib-only Python client. It needs Windows x64, Python 3.9+ and the Microsoft Visual C++ x64 runtime compatible with the compiler used for the game. The bundle includes a signed Microsoft runtime installer; follow its README if that runtime is missing or older. Unreal and Visual Studio are not required on the receiving machine.
 
 ```powershell
 python scripts/run_demo.py --bundle "C:\AuroraViewDemoBundle" --output "C:\AuroraViewDemo\OfflineRun"
@@ -78,6 +78,7 @@ Screenshots and recordings will be added only from real host runs, with engine/c
 
 - The current matrix is Win64. Other platforms and unlisted Unreal versions need their own native validation.
 - The launched game is Development. Shipping compilation is a separate check; it does not establish Shipping runtime or browser acceptance.
+- Editor docking and Game presentation are separate capabilities. The Game demo opens a native Slate window; it does not demonstrate a UMG widget embedded in the game viewport.
 - The plugin must be enabled in an Editor project or compiled into a game. It does not attach to an unmodified game.
 - External Python works in both contexts. Embedded `unreal` Python is optional in Editor and unavailable in packaged games and UE 4.18.
 - Reflection reaches loaded objects and supported nonlatent UFunctions. Project tools own asynchronous operations and application-specific behavior; Editor-only APIs do not become Game APIs.

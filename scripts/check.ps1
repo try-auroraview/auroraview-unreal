@@ -48,6 +48,7 @@ try {
         'tests/python_client_test.py',
         'tests/demo_tools_test.py',
         'tests/run_demo_test.py',
+        'tests/package_demo_test.py',
         'tests/native_evidence_test.py',
         'tests/native_showcase_source_test.py'
     )) {

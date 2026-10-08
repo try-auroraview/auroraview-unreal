@@ -6,6 +6,7 @@
 #include "Dom/JsonObject.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/TabManager.h"
+#include "GenericPlatform/GenericWindow.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
 #include "Interfaces/IPluginManager.h"
@@ -71,6 +72,24 @@ FString MakeDocument(const FString& Stub, const FString& Bootstrap, const FStrin
 TMap<FName, uint64> DockOwners;
 uint64 NextDockOwner = 0;
 
+class FStableDockTarget final : public FTabManager::FSearchPreference
+{
+public:
+    FStableDockTarget(const TSharedRef<SDockTab>& InTarget, const FTabId& InIdentity)
+        : Target(InTarget), Identity(InIdentity) {}
+    TSharedPtr<SDockTab> Search(const FTabManager&, FName, const TSharedRef<SDockTab>& Tab) const override
+    {
+        // InsertNewDocumentTab assigns a temporary document ID before Search.
+        // Restore our registered identity before Slate creates persistent stack
+        // metadata. UE4 has no separate NewTabId overload of the insertion API.
+        Tab->SetLayoutIdentifier(Identity);
+        return Target;
+    }
+private:
+    TSharedRef<SDockTab> Target;
+    FTabId Identity;
+};
+
 struct FSession final : TSharedFromThis<FSession>
 {
     std::shared_ptr<AuroraView::SessionMailbox> Mailbox = std::make_shared<AuroraView::SessionMailbox>();
@@ -83,6 +102,7 @@ struct FSession final : TSharedFromThis<FSession>
     TSharedPtr<IWebBrowserWindow> NativeBrowser;
     TSharedPtr<SWebBrowser> Browser;
     TSharedPtr<SWindow> Window;
+    TWeakPtr<SWindow> BrowserParentWindow;
     TWeakPtr<SDockTab> DockTab;
     FName DockId;
     FString DockFragment;
@@ -312,6 +332,7 @@ struct FSession final : TSharedFromThis<FSession>
         const auto OldBrowser = MoveTemp(Browser);
         const auto OldNativeBrowser = MoveTemp(NativeBrowser);
         const auto OldWindow = MoveTemp(Window);
+        BrowserParentWindow.Reset();
         const auto OldTab = DockTab.Pin();
         DockTab.Reset();
         if (OldTab.IsValid()) OldTab->SetOnTabClosed(SDockTab::FOnTabClosedCallback());
@@ -351,6 +372,7 @@ struct FSession final : TSharedFromThis<FSession>
     void Pump()
     {
         check(IsInGameThread());
+        UpdateBrowserParent();
         for (auto& Message : Mailbox->Drain())
         {
             if (!Mailbox->IsCurrent(Message.Generation)) continue;
@@ -376,6 +398,22 @@ struct FSession final : TSharedFromThis<FSession>
             UE_LOG(LogAuroraView, Error, TEXT("AuroraView bridge startup timed out; closing failed view"));
             Dispose(true);
         }
+    }
+
+    void UpdateBrowserParent()
+    {
+        if (!Browser.IsValid() || !NativeBrowser.IsValid()) return;
+        const auto Tab = DockTab.Pin();
+        const auto Parent = Tab.IsValid() ? Tab->GetParentWindow() : Window;
+        if (!Parent.IsValid() || BrowserParentWindow.Pin() == Parent) return;
+        // Slate adopts a spawned tab after its content factory returns. Follow
+        // its actual host window on later ticks, including drag and redock.
+        BrowserParentWindow = Parent;
+#if ENGINE_MAJOR_VERSION >= 5
+        Browser->SetParentWindow(Parent);
+#else
+        NativeBrowser->SetParentWindow(Parent);
+#endif
     }
 };
 }
@@ -626,13 +664,7 @@ bool FAuroraViewRuntimeModule::OpenPresentation(FName Id, const FString& Fragmen
         const auto Window = SNew(SWindow).Title(PresentationTitle).ClientSize(FVector2D(920, 640))
             [ Browser.ToSharedRef() ];
         Session->Window = Window;
-#if ENGINE_MAJOR_VERSION >= 5
-        // Retain UE5's widget handler setup as well as its native parent binding.
-        Browser->SetParentWindow(Window);
-#else
-        // UE4 exposes the parent binding through the native interface only.
-        NativeBrowser->SetParentWindow(Window);
-#endif
+        Session->UpdateBrowserParent();
         Window->SetOnWindowClosed(FOnWindowClosed::CreateLambda([Weak, Epoch](const TSharedRef<SWindow>& ClosedWindow)
         {
             const auto Current = Weak.Pin();
@@ -740,6 +772,13 @@ bool FAuroraViewRuntimeModule::OpenDocked(FName Id, FString& OutError)
     const auto Current = [this, Id, Session, Request]()
     { return Impl && Impl->IsCurrent(Id, Session) && Session->DockRequest == Request; };
     const auto ErrorTab = Session->DockTab.Pin();
+    if (ErrorTab.IsValid() && Session->Browser.IsValid())
+    {
+        // The tab may now belong to a Level Editor stack after a native move.
+        // Invoking its global spawner again could relocate it into a new area.
+        if (!Show(Id)) { OutError = TEXT("The current native tab could not be activated"); return false; }
+        return Current() && Session->DockTab.Pin() == ErrorTab;
+    }
     if (ErrorTab.IsValid() && !Session->Browser.IsValid())
     {
         const bool bOpened = OpenPresentation(Id, Session->DockFragment, Session->DockTitle, OutError, ErrorTab);
@@ -775,6 +814,68 @@ bool FAuroraViewRuntimeModule::OpenDocked(FName Id, FString& OutError)
     return true;
 }
 
+bool FAuroraViewRuntimeModule::OpenDocked(FName Id, const FString& Fragment, const FText& Title, FString& OutError)
+{
+    check(IsInGameThread());
+    OutError.Empty();
+    if (!GIsEditor || IsRunningCommandlet())
+    { OutError = TEXT("Native dock tabs require an interactive Editor host"); return false; }
+    const auto* Entry = Impl && !Impl->bStopping ? Impl->Sessions.Find(Id) : nullptr;
+    const auto Session = Entry ? *Entry : TSharedPtr<FSession>();
+    if (Session.IsValid() && (Session->Browser.IsValid() || Session->DockTab.IsValid() || Session->Window.IsValid()))
+    {
+        if (!Session->bDockRegistered || Session->DockFragment != Fragment || !Session->DockTitle.EqualTo(Title))
+        { OutError = TEXT("Close this view before changing its dock presentation or content"); return false; }
+        return OpenDocked(Id, OutError);
+    }
+    return RegisterDocked(Id, Fragment, Title, OutError) && OpenDocked(Id, OutError);
+}
+
+bool FAuroraViewRuntimeModule::DockInTabManager(FName Id, const TSharedRef<FTabManager>& TargetManager,
+    FName PlaceholderId, FString& OutError)
+{
+    check(IsInGameThread());
+    OutError.Empty();
+    if (!GIsEditor || IsRunningCommandlet() || !FSlateApplication::IsInitialized())
+    { OutError = TEXT("Native dock tabs require an interactive Editor host"); return false; }
+    const auto* Entry = Impl && !Impl->bStopping ? Impl->Sessions.Find(Id) : nullptr;
+    const auto Session = Entry ? *Entry : TSharedPtr<FSession>();
+    const auto Tab = Session.IsValid() ? Session->DockTab.Pin() : TSharedPtr<SDockTab>();
+    if (!Session.IsValid() || Session->bDisposing || !Session->bDockRegistered || !Session->Browser.IsValid() || !Tab.IsValid())
+    { OutError = TEXT("Open this registered native dock tab before moving it"); return false; }
+    const auto Target = TargetManager->FindExistingLiveTab(PlaceholderId);
+    const auto Root = FGlobalTabmanager::Get()->GetRootWindow();
+    if (!Target.IsValid() || !Root.IsValid() || Target->GetParentWindow() != Root || Target == Tab)
+    { OutError = TEXT("The destination must be an open tab in the Editor root window"); return false; }
+    if (Tab->GetParentWindow() == Root)
+    { Session->UpdateBrowserParent(); return Show(Id); }
+    const uint64 Epoch = Session->Generation;
+    const uint64 Request = ++Session->DockRequest;
+    const auto Current = [this, Id, Session, Tab, Epoch, Request]()
+    { return Impl && Impl->IsCurrent(Id, Session) && !Session->bDisposing && Session->DockTab.Pin() == Tab
+        && Session->Mailbox->IsCurrent(Epoch) && Session->DockRequest == Request; };
+    const FTabId Identity = Tab->GetLayoutIdentifier();
+    const FStableDockTarget Search(Target.ToSharedRef(), Identity);
+    ++Session->DockInvocationDepth;
+    ON_SCOPE_EXIT { Session->EndDockInvocation(); };
+    // UE RemoveTabFromParent fires OnTabClosed even during a deliberate move.
+    // Suspend only our lifecycle callback, then restore it for the adopted tab.
+    Tab->SetOnTabClosed(SDockTab::FOnTabClosedCallback());
+    Tab->RemoveTabFromParent();
+    if (!Current()) { OutError = TEXT("Dock move interrupted while leaving its old stack"); return false; }
+    TargetManager->InsertNewDocumentTab(PlaceholderId, Search, Tab.ToSharedRef());
+    if (!Current()) { OutError = TEXT("Dock move interrupted by a retired presentation"); return false; }
+    Session->OwnDockTab(Tab.ToSharedRef());
+    Session->UpdateBrowserParent();
+    if (!Current() || Tab->GetParentWindow() != Root || !(Tab->GetLayoutIdentifier() == Identity))
+    {
+        OutError = TEXT("Slate did not attach the native view to the requested Editor root stack");
+        return false;
+    }
+    if (!Show(Id)) { OutError = TEXT("The attached native tab could not be activated"); return false; }
+    return true;
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
 void FAuroraViewRuntimeModule::FailNextOpenForTesting(FName Id)
 {
@@ -794,6 +895,52 @@ uint64 FAuroraViewRuntimeModule::GetGeneration(FName Id) const
     check(IsInGameThread());
     const auto* Session = Impl ? Impl->Sessions.Find(Id) : nullptr;
     return Session && (*Session)->Browser.IsValid() && (*Session)->Mailbox->IsCurrent((*Session)->Generation) ? (*Session)->PresentationGeneration : 0;
+}
+TSharedRef<FJsonObject> FAuroraViewRuntimeModule::DescribeView(FName Id) const
+{
+    check(IsInGameThread());
+    const auto* Entry = Impl ? Impl->Sessions.Find(Id) : nullptr;
+    const auto Session = Entry ? *Entry : TSharedPtr<FSession>();
+    const auto Tab = Session.IsValid() ? Session->DockTab.Pin() : TSharedPtr<SDockTab>();
+    const auto Window = Tab.IsValid() ? Tab->GetParentWindow() : (Session.IsValid() ? Session->Window : TSharedPtr<SWindow>());
+    const auto Root = FSlateApplication::IsInitialized() ? FGlobalTabmanager::Get()->GetRootWindow() : TSharedPtr<SWindow>();
+    const auto Handle = [](const TSharedPtr<SWindow>& Value)
+    {
+        const auto Native = Value.IsValid() ? Value->GetNativeWindow() : TSharedPtr<FGenericWindow>();
+        return Native.IsValid() ? AuroraViewCompatibility::UInt64String(reinterpret_cast<UPTRINT>(Native->GetOSWindowHandle())) : FString();
+    };
+    auto State = MakeShared<FJsonObject>();
+    State->SetStringField(TEXT("id"), Id.ToString());
+    State->SetBoolField(TEXT("exists"), Session.IsValid());
+    State->SetBoolField(TEXT("open"), GetGeneration(Id) != 0);
+    State->SetBoolField(TEXT("ready"), IsReady(Id));
+    State->SetNumberField(TEXT("generation"), GetGeneration(Id));
+    State->SetStringField(TEXT("presentation"), Tab.IsValid() ? TEXT("docked") : (Window.IsValid()
+        ? TEXT("floating") : (Session.IsValid() && Session->bDockRegistered ? TEXT("docked") : TEXT("none"))));
+    State->SetBoolField(TEXT("dock_registered"), Session.IsValid() && Session->bDockRegistered);
+    State->SetStringField(TEXT("tab_id"), Session.IsValid() && Session->bDockRegistered ? Session->DockId.ToString() : FString());
+    State->SetBoolField(TEXT("tab_open"), Tab.IsValid());
+    State->SetBoolField(TEXT("tab_active"), Tab.IsValid() && Tab->IsActive());
+    State->SetBoolField(TEXT("tab_foreground"), Tab.IsValid() && Tab->IsForeground());
+    State->SetBoolField(TEXT("attached_to_root_window"), Tab.IsValid() && Window.IsValid() && Root.IsValid() && Window == Root);
+    State->SetStringField(TEXT("window_native_handle"), Handle(Window));
+    State->SetStringField(TEXT("root_window_native_handle"), Handle(Root));
+    State->SetStringField(TEXT("browser_parent_window_native_handle"), Handle(Session.IsValid() ? Session->BrowserParentWindow.Pin() : TSharedPtr<SWindow>()));
+    State->SetBoolField(TEXT("window_visible"), Window.IsValid() && Window->IsVisible());
+    State->SetBoolField(TEXT("window_minimized"), Window.IsValid() && Window->IsWindowMinimized());
+    State->SetBoolField(TEXT("window_maximized"), Window.IsValid() && Window->IsWindowMaximized());
+    auto Geometry = MakeShared<FJsonObject>();
+    Geometry->SetStringField(TEXT("coordinate_space"), TEXT("slate_absolute"));
+    if (Session.IsValid() && Session->Browser.IsValid())
+    {
+        const auto& NativeGeometry = Session->Browser->GetCachedGeometry();
+        Geometry->SetNumberField(TEXT("x"), NativeGeometry.GetAbsolutePosition().X);
+        Geometry->SetNumberField(TEXT("y"), NativeGeometry.GetAbsolutePosition().Y);
+        Geometry->SetNumberField(TEXT("width"), NativeGeometry.GetLocalSize().X);
+        Geometry->SetNumberField(TEXT("height"), NativeGeometry.GetLocalSize().Y);
+    }
+    State->SetObjectField(TEXT("browser_geometry"), Geometry);
+    return State;
 }
 bool FAuroraViewRuntimeModule::EmitEvent(FName Id, const FString& Event, const TSharedRef<FJsonObject>& Detail)
 {

@@ -10,6 +10,7 @@ python3 "$ROOT/tests/validate_game_test.py"
 python3 "$ROOT/tests/python_client_test.py"
 python3 "$ROOT/tests/demo_tools_test.py"
 python3 "$ROOT/tests/run_demo_test.py"
+python3 "$ROOT/tests/package_demo_test.py"
 python3 "$ROOT/tests/native_evidence_test.py"
 python3 "$ROOT/tests/native_showcase_source_test.py"
 c++ -std=c++17 -Wall -Wextra -Werror -pedantic -pthread \

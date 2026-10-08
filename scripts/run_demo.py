@@ -254,10 +254,18 @@ def launch(prepared, html, output, session_seconds):
         tools.register()
         client.call('auroraview.view.open', {
             'id': 'LiveDemo', 'title': 'AuroraView / Unreal ' + prepared['engine_version'] + ' / ' + mode.title(),
+            'presentation': 'docked' if mode == 'editor' else 'floating',
             'html': html.read_text(encoding='utf-8')})
+        if mode == 'editor':
+            client.call('unreal.editor.view.dock', {'id': 'LiveDemo'})
         if not tools.browser_ready.wait(45):
             raise build_plugin.BuildError('The real CEF dashboard did not finish its Core/Python handshake')
+        presentation = client.call('auroraview.view.describe', {'id': 'LiveDemo'})
+        if not presentation.get('ready') or (mode == 'editor' and (
+                presentation.get('presentation') != 'docked' or not presentation.get('attached_to_root_window'))):
+            raise build_plugin.BuildError('The native host did not confirm the requested view presentation')
         with lock:
+            result['presentation'] = presentation
             result['status'] = 'running'
             save(receipt_path, result)
         print('Demo ready: Unreal ' + prepared['engine_version'] + ' ' + mode + ', PID ' + str(process.pid), flush=True)

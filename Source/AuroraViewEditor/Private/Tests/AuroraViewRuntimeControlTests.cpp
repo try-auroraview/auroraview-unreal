@@ -26,6 +26,17 @@ bool FAuroraViewRuntimeControlTest::RunTest(const FString&)
     TestTrue(TEXT("Actual native host reports engine identity"), Info.bOk && Info.Result.IsValid());
     if (!Info.bOk || !Info.Result.IsValid()) return false;
     TestTrue(TEXT("Isolated acceptance explicitly enables native control"), Info.Result->AsObject()->GetBoolField(TEXT("native_control")));
+    auto ViewArgs = MakeShared<FJsonObject>();
+    ViewArgs->SetStringField(TEXT("id"), TEXT("ControlInvalidPresentation"));
+    ViewArgs->SetStringField(TEXT("html"), TEXT("<p>Invalid presentation never opens CEF</p>"));
+    ViewArgs->SetStringField(TEXT("presentation"), TEXT("unknown"));
+    auto InvalidPresentation = Invoke(TEXT("auroraview.view.open"), ViewArgs);
+    TestTrue(TEXT("Unknown presentation fails before opening a browser"), !InvalidPresentation.bOk && InvalidPresentation.ErrorCode == TEXT("INVALID_PARAMS"));
+    ViewArgs->SetNumberField(TEXT("presentation"), 7);
+    InvalidPresentation = Invoke(TEXT("auroraview.view.open"), ViewArgs);
+    TestTrue(TEXT("Presentation requires a string discriminator"), !InvalidPresentation.bOk && InvalidPresentation.ErrorCode == TEXT("INVALID_PARAMS"));
+    auto MissingView = Invoke(TEXT("auroraview.view.describe"), ViewArgs);
+    TestTrue(TEXT("Rejected presentation creates no native view"), MissingView.bOk && !MissingView.Result->AsObject()->GetBoolField(TEXT("exists")));
     if (FParse::Param(FCommandLine::Get(), TEXT("AuroraViewExpectEditorPython")))
         TestTrue(TEXT("Fixture-enabled installed Python capability is present"), Info.Result->AsObject()->GetBoolField(TEXT("editor_python")));
     auto Args = MakeShared<FJsonObject>();

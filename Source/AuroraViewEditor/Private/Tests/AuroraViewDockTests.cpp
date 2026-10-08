@@ -3,6 +3,7 @@
 #include "Dom/JsonObject.h"
 #include "Framework/Docking/TabManager.h"
 #include "HAL/PlatformTime.h"
+#include "LevelEditor.h"
 #include "Misc/AutomationTest.h"
 #include "Modules/ModuleManager.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -10,6 +11,22 @@
 namespace
 {
 const FName DockA(TEXT("DockAcceptanceA")), DockB(TEXT("DockAcceptanceB"));
+const FString DockHtml = TEXT("<h1>Actual docked CEF lifecycle test</h1><script>")
+    TEXT("addEventListener('auroraviewready',()=>auroraview.call('test.echo',{ok:true}).then(v=>auroraview.call('test.docked',v.ok===true)));</script>");
+FAuroraViewReply OpenControlDock(FAuroraViewRuntimeModule& Module, FName Id, const FString& Html = DockHtml)
+{
+    auto Args = MakeShared<FJsonObject>();
+    Args->SetStringField(TEXT("id"), Id.ToString());
+    Args->SetStringField(TEXT("html"), Html);
+    Args->SetStringField(TEXT("title"), Id.ToString());
+    Args->SetStringField(TEXT("presentation"), TEXT("docked"));
+    FAuroraViewReply Reply;
+    bool bCompleted = false;
+    Module.CallTool(TEXT("auroraview.view.open"), MakeShared<FJsonValueObject>(Args),
+        [&Reply, &bCompleted](FAuroraViewReply Value) { Reply = MoveTemp(Value); bCompleted = true; });
+    check(bCompleted);
+    return Reply;
+}
 struct FDockState
 {
     int32 ReportsA = 0, ReportsB = 0;
@@ -24,6 +41,7 @@ public:
     bool Update() override
     {
         auto& Module = FModuleManager::GetModuleChecked<FAuroraViewEditorModule>(TEXT("AuroraViewEditor"));
+        auto& Runtime = FModuleManager::GetModuleChecked<FAuroraViewRuntimeModule>(TEXT("AuroraViewRuntime"));
         if (FPlatformTime::Seconds() > State->Deadline)
         {
             Test->AddError(TEXT("Timed out waiting for actual docked CEF round trips / reopen"));
@@ -40,9 +58,37 @@ public:
                 FGlobalTabmanager::Get()->FindExistingLiveTab(FName(TEXT("AuroraView.View.DockAcceptanceB"))).IsValid());
             Test->TestFalse(TEXT("Floating-only Hide never pretends to hide a dock"), Module.Hide(DockA));
             State->FirstGeneration = Module.GetGeneration(DockA);
+            const auto NativeTab = FGlobalTabmanager::Get()->FindExistingLiveTab(FName(TEXT("AuroraView.View.DockAcceptanceA")));
+            const auto NativeState = Runtime.DescribeView(DockA);
+            Test->TestEqual(TEXT("Describe identifies the actual native tab presentation"), NativeState->GetStringField(TEXT("presentation")), FString(TEXT("docked")));
+            Test->TestTrue(TEXT("Describe reports the live tab and registration"), NativeState->GetBoolField(TEXT("tab_open")) && NativeState->GetBoolField(TEXT("dock_registered")));
+            Test->TestEqual(TEXT("Describe distinguishes root docking from a floating native tab"), NativeState->GetBoolField(TEXT("attached_to_root_window")),
+                NativeTab.IsValid() && NativeTab->GetParentWindow().IsValid() && NativeTab->GetParentWindow() == FGlobalTabmanager::Get()->GetRootWindow());
+            Test->TestEqual(TEXT("CEF binding follows the actual tab host window"), NativeState->GetStringField(TEXT("browser_parent_window_native_handle")), NativeState->GetStringField(TEXT("window_native_handle")));
+            Test->TestTrue(TEXT("Repeated control open reuses its actual native tab"), OpenControlDock(Runtime, DockA).bOk);
+            Test->TestEqual(TEXT("Idempotent control open preserves the generation"), Module.GetGeneration(DockA), State->FirstGeneration);
+            const auto Changed = OpenControlDock(Runtime, DockA, TEXT("<p>Cannot replace live content</p>"));
+            Test->TestTrue(TEXT("Control open rejects changing live dock content"), !Changed.bOk && Changed.ErrorCode == TEXT("VIEW_OPEN_FAILED"));
+            Test->TestEqual(TEXT("Rejected rebind preserves the current browser"), Module.GetGeneration(DockA), State->FirstGeneration);
+            const auto TargetManager = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
+            FString DockError;
+            if (!TargetManager.IsValid() || !Runtime.DockInTabManager(DockA, TargetManager.ToSharedRef(), FName(TEXT("LevelEditorSelectionDetails")), DockError))
+            {
+                Test->AddError(TEXT("Native Editor root attachment failed: ") + DockError);
+                Module.Remove(DockA); Module.Remove(DockB); return true;
+            }
+            const auto Attached = Runtime.DescribeView(DockA);
+            Test->TestTrue(TEXT("Native dock move attaches the actual tab to the Editor root"), Attached->GetBoolField(TEXT("attached_to_root_window")));
+            Test->TestTrue(TEXT("Native dock move retains browser readiness"), Attached->GetBoolField(TEXT("ready")));
+            Test->TestEqual(TEXT("Native dock move preserves browser generation"), Module.GetGeneration(DockA), State->FirstGeneration);
+            Test->TestEqual(TEXT("Native docking preserves the registered tab identity"), NativeTab->GetLayoutIdentifier().TabType, FName(TEXT("AuroraView.View.DockAcceptanceA")));
+            Test->TestEqual(TEXT("Native docking rebinds the CEF parent to the root window"), Attached->GetStringField(TEXT("browser_parent_window_native_handle")), Attached->GetStringField(TEXT("root_window_native_handle")));
+            Test->TestTrue(TEXT("Idempotent open preserves actual root attachment"), OpenControlDock(Runtime, DockA).bOk && Runtime.DescribeView(DockA)->GetBoolField(TEXT("attached_to_root_window")));
             Module.Close(DockA);
             Test->TestFalse(TEXT("Close invalidates A readiness synchronously"), Module.IsReady(DockA));
             Test->TestTrue(TEXT("Close A preserves B"), Module.IsReady(DockB));
+            const auto Closed = Runtime.DescribeView(DockA);
+            Test->TestTrue(TEXT("Closed native state retains registration but no live presentation"), Closed->GetBoolField(TEXT("dock_registered")) && !Closed->GetBoolField(TEXT("tab_open")) && !Closed->GetBoolField(TEXT("open")) && Closed->GetNumberField(TEXT("generation")) == 0);
             State->Phase = 1;
             return false;
         }
@@ -50,8 +96,8 @@ public:
         {
             if (FGlobalTabmanager::Get()->FindExistingLiveTab(FName(TEXT("AuroraView.View.DockAcceptanceA"))).IsValid())
                 return false;
-            FString Error;
-            if (!Module.OpenDocked(DockA, Error)) Test->AddError(Error);
+            const auto Reply = OpenControlDock(Runtime, DockA);
+            if (!Reply.bOk) Test->AddError(Reply.ErrorMessage);
             State->Phase = 2;
             return false;
         }
@@ -72,6 +118,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAuroraViewDockAcceptance, "AuroraView.Editor.D
 bool FAuroraViewDockAcceptance::RunTest(const FString&)
 {
     auto& Module = FModuleManager::LoadModuleChecked<FAuroraViewEditorModule>(TEXT("AuroraViewEditor"));
+    auto& Runtime = FModuleManager::GetModuleChecked<FAuroraViewRuntimeModule>(TEXT("AuroraViewRuntime"));
     const auto State = MakeShared<FDockState>();
     State->Deadline = FPlatformTime::Seconds() + 35.0;
     for (const FName Id : { DockA, DockB })
@@ -85,12 +132,10 @@ bool FAuroraViewDockAcceptance::RunTest(const FString&)
             { if (Id == DockA) ++State->ReportsA; else ++State->ReportsB; }
             return FAuroraViewReply::Success(MakeShared<FJsonValueBoolean>(IsInGameThread()));
         });
-        FString Error;
-        const FString Html = TEXT("<h1>Actual docked CEF lifecycle test</h1><script>")
-            TEXT("addEventListener('auroraviewready',()=>auroraview.call('test.echo',{ok:true}).then(v=>auroraview.call('test.docked',v.ok===true)));</script>");
-        if (!Module.RegisterDocked(Id, Html, FText::FromName(Id), Error) || !Module.OpenDocked(Id, Error))
+        const auto Reply = OpenControlDock(Runtime, Id);
+        if (!Reply.bOk)
         {
-            AddError(Error); Module.Remove(DockA); Module.Remove(DockB); return false;
+            AddError(Reply.ErrorMessage); Module.Remove(DockA); Module.Remove(DockB); return false;
         }
     }
     ADD_LATENT_AUTOMATION_COMMAND(FWaitForDocked(this, State));

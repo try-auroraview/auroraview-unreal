@@ -7,6 +7,7 @@
 class SDockTab;
 class SWidget;
 class FJsonObject;
+class FTabManager;
 
 // Called on GameThread after the browser is constructed. Native widgets may
 // surround it; the browser and RPC session are still owned by this module.
@@ -49,6 +50,13 @@ public:
     bool RegisterDocked(FName Id, const FString& TrustedHtmlFragment, const FText& Title,
         FString& OutError, FAuroraViewDockContent ContentFactory = {});
     bool OpenDocked(FName Id, FString& OutError);
+    // Editor control convenience: register a closed view or reuse its current
+    // native tab. Changing live content requires an explicit Close first.
+    bool OpenDocked(FName Id, const FString& TrustedHtmlFragment, const FText& Title, FString& OutError);
+    // Move only this module's live tab into an already-open Editor root stack.
+    // The browser/session survives the native move; no tab ownership escapes.
+    bool DockInTabManager(FName Id, const TSharedRef<FTabManager>& TargetManager,
+        FName PlaceholderId, FString& OutError);
 #if WITH_DEV_AUTOMATION_TESTS
     // Deterministic native harness seam; never exposed over the Core bridge.
     void FailNextOpenForTesting(FName Id);
@@ -56,6 +64,9 @@ public:
     bool IsReady(FName Id) const;
     // Module-unique live presentation epoch; zero when closed, failed or removed.
     uint64 GetGeneration(FName Id) const;
+    // Native Slate state, including whether a dock tab is actually attached to
+    // the Editor root window. A dock-capable floating tab is reported honestly.
+    TSharedRef<FJsonObject> DescribeView(FName Id) const;
     bool EmitEvent(FName Id, const FString& Event, const TSharedRef<FJsonObject>& Detail);
     bool Show(FName Id);
     bool Hide(FName Id);

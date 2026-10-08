@@ -95,6 +95,8 @@ class DemoLaunchGuards(unittest.TestCase):
                 if method == 'auroraview.view.open':
                     process.running = False
                     return True
+                if method == 'auroraview.view.describe':
+                    return {'ready': True, 'presentation': 'floating'}
                 raise AssertionError(method)
             def close(self):
                 raise TimeoutError('User callback did not finish')

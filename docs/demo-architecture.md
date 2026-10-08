@@ -28,6 +28,8 @@ AuroraView Core call / invoke / result / event contracts
 
 The sample's Game target depends on Runtime. Editor-only modules and embedded Python are not required in the cooked game. The Editor path adds the thin Editor integration around the same Runtime bridge and native scene actions.
 
+The Editor launcher requests `presentation: "docked"` through `auroraview.view.open`. Runtime owns the native `SDockTab` and browser lifecycle, while Slate owns dragging and layout attachment. `auroraview.view.describe` reports actual native presentation state. Game mode uses `presentation: "floating"`; a floating Slate window is a separate presentation from a viewport or UMG embed.
+
 ## Follow a scene action
 
 1. The dashboard uses AuroraView Core to call the external Python `demo.scene.set_height` tool.

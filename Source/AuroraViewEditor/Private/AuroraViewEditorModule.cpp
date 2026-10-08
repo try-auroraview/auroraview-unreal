@@ -9,10 +9,27 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/CoreDelegates.h"
+#include "Dom/JsonObject.h"
+#include "LevelEditor.h"
 
 namespace {
 FAuroraViewRuntimeModule& Host() {
     return FModuleManager::LoadModuleChecked<FAuroraViewRuntimeModule>(TEXT("AuroraViewRuntime"));
+}
+FAuroraViewReply DockEditorView(const TSharedPtr<FJsonValue>& Params) {
+    FString Id;
+    const auto Args = Params.IsValid() && Params->Type == EJson::Object ? Params->AsObject() : nullptr;
+    if (!Args.IsValid() || !Args->TryGetStringField(TEXT("id"), Id) || Id.IsEmpty() || Id.Len() > 128)
+        return FAuroraViewReply::Failure(TEXT("InvalidParams"), TEXT("A view id is required"), TEXT("INVALID_PARAMS"));
+    if (!GEditor || IsRunningCommandlet())
+        return FAuroraViewReply::Failure(TEXT("EditorUnavailable"), TEXT("An interactive Editor is required"), TEXT("EDITOR_UNAVAILABLE"));
+    const auto Manager = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
+    if (!Manager.IsValid())
+        return FAuroraViewReply::Failure(TEXT("EditorUnavailable"), TEXT("The Level Editor layout is not ready"), TEXT("EDITOR_UNAVAILABLE"));
+    FString Error;
+    if (!Host().DockInTabManager(FName(*Id), Manager.ToSharedRef(), TEXT("LevelEditorSelectionDetails"), Error))
+        return FAuroraViewReply::Failure(TEXT("DockFailed"), Error, TEXT("VIEW_DOCK_FAILED"));
+    return FAuroraViewReply::Success(MakeShared<FJsonValueObject>(Host().DescribeView(FName(*Id))));
 }
 }
 struct FAuroraViewEditorModule::FImpl {
@@ -34,6 +51,7 @@ void FAuroraViewEditorModule::StartupModule() {
 }
 void FAuroraViewEditorModule::InitializeShowcase() {
     if (!Impl || Impl->Showcase.IsValid()) return;
+    Host().RegisterTool(TEXT("unreal.editor.view.dock"), DockEditorView);
     FString Html, Error;
     const auto Plugin = IPluginManager::Get().FindPlugin(TEXT("AuroraView"));
     Impl->Showcase = MakeShared<FAuroraViewNativeShowcase>(*this);
@@ -52,6 +70,7 @@ void FAuroraViewEditorModule::InitializeShowcase() {
 }
 void FAuroraViewEditorModule::ShutdownModule() {
     if (!Impl) return;
+    Host().UnregisterTool(TEXT("unreal.editor.view.dock"));
     AuroraViewCompatibility::PostEngineInit().Remove(Impl->PostEngineInit);
     if (Impl->Showcase.IsValid()) Impl->Showcase->Stop();
     if (Impl->DockCommand) IConsoleManager::Get().UnregisterConsoleObject(Impl->DockCommand, false);

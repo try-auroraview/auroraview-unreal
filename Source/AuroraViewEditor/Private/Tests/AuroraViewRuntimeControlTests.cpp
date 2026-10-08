@@ -1,10 +1,15 @@
 #include "AuroraViewRuntimeModule.h"
+#include "Components/StaticMeshComponent.h"
+#include "CoreGlobals.h"
 #include "Dom/JsonObject.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/World.h"
 #include "GameFramework/GameUserSettings.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "Misc/ScopeExit.h"
 #include "Modules/ModuleManager.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -51,6 +56,69 @@ bool FAuroraViewRuntimeControlTest::RunTest(const FString&)
     auto BadArgs = MakeShared<FJsonObject>(); BadArgs->SetBoolField(TEXT("unknown"), true); Args->SetObjectField(TEXT("args"), BadArgs);
     auto Rejected = Invoke(TEXT("unreal.object.call"), Args);
     TestTrue(TEXT("Unknown arguments fail before ProcessEvent"), !Rejected.bOk && Rejected.ErrorCode == TEXT("INVALID_PARAMS"));
+    {
+        // An independent transient world exercises idle Editor dispatch without
+        // mutating the user's map or requiring the graphical showcase fixture.
+        UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+        TestTrue(TEXT("Transient Editor world exists"), IsValid(World));
+        if (!IsValid(World)) return false;
+        ON_SCOPE_EXIT { World->DestroyWorld(false); };
+        TestFalse(TEXT("Editor Actor dispatch does not rely on initialized Game actors"), World->AreActorsInitialized());
+        const FVector InitialLocation(-170, 25, 80);
+        FActorSpawnParameters Spawn;
+        Spawn.ObjectFlags |= RF_Transient;
+        AStaticMeshActor* Actor = World->SpawnActor<AStaticMeshActor>(InitialLocation, FRotator::ZeroRotator, Spawn);
+        TestTrue(TEXT("Actual nonzero Editor Actor exists"), IsValid(Actor));
+        if (!IsValid(Actor)) return false;
+        Actor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
+        TestTrue(TEXT("Native Actor starts at the nonzero test location"), Actor->GetActorLocation().Equals(InitialLocation, 0.0001));
+        auto ActorArgs = MakeShared<FJsonObject>();
+        ActorArgs->SetStringField(TEXT("object"), Actor->GetPathName());
+        ActorArgs->SetStringField(TEXT("function"), TEXT("K2_GetActorLocation"));
+        ActorArgs->SetObjectField(TEXT("args"), MakeShared<FJsonObject>());
+        const auto CheckLocation = [this, &Invoke, &ActorArgs, Actor]()
+        {
+            const auto Read = Invoke(TEXT("unreal.object.call"), ActorArgs);
+            FVector Location = FVector::ZeroVector;
+            bool Decoded = false;
+            const auto Value = Read.bOk && Read.Result.IsValid()
+                ? Read.Result->AsObject()->TryGetField(TEXT("return_value")) : TSharedPtr<FJsonValue>();
+            if (Value.IsValid() && Value->Type == EJson::String) Decoded = Location.InitFromString(Value->AsString());
+            else if (Value.IsValid() && Value->Type == EJson::Object)
+            {
+                double X = 0, Y = 0, Z = 0;
+                const auto Vector = Value->AsObject();
+                Decoded = Vector->TryGetNumberField(TEXT("x"), X) && Vector->TryGetNumberField(TEXT("y"), Y)
+                    && Vector->TryGetNumberField(TEXT("z"), Z);
+                Location = FVector(static_cast<float>(X), static_cast<float>(Y), static_cast<float>(Z));
+            }
+            TestTrue(TEXT("Reflected Editor Actor getter returns its actual native location"),
+                Decoded && Location.Equals(Actor->GetActorLocation(), 0.0001));
+        };
+        for (const bool AllowedBefore : { false, true })
+        {
+            TGuardValue<bool> ExistingPermission(GAllowActorScriptExecutionInEditor, AllowedBefore);
+            CheckLocation();
+            TestEqual(TEXT("Actor getter restores the previous Editor script permission"), GAllowActorScriptExecutionInEditor, AllowedBefore);
+            const FVector Desired = Actor->GetActorLocation() + FVector(7, 11, 13);
+            auto Position = MakeShared<FJsonObject>();
+            Position->SetNumberField(TEXT("x"), Desired.X); Position->SetNumberField(TEXT("y"), Desired.Y); Position->SetNumberField(TEXT("z"), Desired.Z);
+            auto SetValues = MakeShared<FJsonObject>();
+            SetValues->SetObjectField(TEXT("NewLocation"), Position);
+            SetValues->SetBoolField(TEXT("bSweep"), false); SetValues->SetBoolField(TEXT("bTeleport"), true);
+            auto SetArgs = MakeShared<FJsonObject>();
+            SetArgs->SetStringField(TEXT("object"), Actor->GetPathName());
+            SetArgs->SetStringField(TEXT("function"), TEXT("K2_SetActorLocation"));
+            SetArgs->SetObjectField(TEXT("args"), SetValues);
+            const auto Moved = Invoke(TEXT("unreal.object.call"), SetArgs);
+            TestTrue(TEXT("Reflected Editor Actor setter changes the actual native transform"),
+                Moved.bOk && Moved.Result.IsValid() && Moved.Result->AsObject()->GetBoolField(TEXT("return_value"))
+                && Actor->GetActorLocation().Equals(Desired, 0.0001));
+            TestEqual(TEXT("Actor setter restores the previous Editor script permission"), GAllowActorScriptExecutionInEditor, AllowedBefore);
+            CheckLocation();
+            TestEqual(TEXT("Actor readback restores the previous Editor script permission"), GAllowActorScriptExecutionInEditor, AllowedBefore);
+        }
+    }
     auto* Settings = GetMutableDefault<UGameUserSettings>();
     auto Property = MakeShared<FJsonObject>(); Property->SetStringField(TEXT("object"), Settings->GetPathName()); Property->SetStringField(TEXT("property"), TEXT("bUseVSync"));
     auto Original = Invoke(TEXT("unreal.object.get"), Property);

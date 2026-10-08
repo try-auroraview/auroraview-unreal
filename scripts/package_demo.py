@@ -95,6 +95,13 @@ def prerequisite(receipt):
                            observed_toolchain_versions=sorted(set(versions)), automatic_install=False)
 
 
+def public_game_product(name):
+    """Keep debug symbols and their staging index in the private build archive."""
+    path = Path(name)
+    return (path.suffix.lower() != '.pdb'
+            and path.name.lower() != 'manifest_debugfiles_win64.txt')
+
+
 def package_demo(game_run, output):
     game_run, output = Path(game_run).resolve(), Path(output).resolve()
     for path in [ROOT, game_run]:
@@ -125,10 +132,14 @@ def package_demo(game_run, output):
     output.mkdir(parents=True)
     (output / 'Game').mkdir()
     # Copy accepted build inputs only, not machine-specific runtime Saved files.
-    for name in expected:
+    for name, digest in expected.items():
+        if not public_game_product(name):
+            continue
         path = output / 'Game' / name
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(archive / name, path)
+        if build_plugin.sha256(path) != digest:
+            raise build_plugin.BuildError('Accepted Game product changed while copying the bundle')
     for directory in ['python/auroraview_unreal', 'Resources']:
         shutil.copytree(ROOT / directory, output / directory,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
@@ -164,6 +175,8 @@ def package_demo(game_run, output):
     version = receipt['engine']['version']
     manifest = dict(schema_version=1, configuration='Development',
                     engine_version=f'{version["MajorVersion"]}.{version["MinorVersion"]}',
+                    engine_build_id=receipt['engine']['build_id'],
+                    engine_build_version_sha256=receipt['engine']['version_sha256'],
                     source={'commit': source['commit'], 'tree': source['tree'],
                             'working_files_sha256': source['working_files_sha256']},
                     executable='Game/' + candidates[0],

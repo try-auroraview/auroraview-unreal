@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -110,6 +111,51 @@ class OfflineBundleTests(unittest.TestCase):
             with self.assertRaises((ValueError, package_demo.build_plugin.BuildError)):
                 package_demo.prerequisite(self.receipt)
             verify.assert_not_called()
+
+    def test_public_bundle_excludes_debug_symbols_and_private_provenance(self):
+        archive = self.game / 'PackagedGame'
+        native = {
+            'Windows/AuroraViewGameFixture/Binaries/Win64/AuroraViewGameFixture.exe': 'native game',
+            'Windows/AuroraViewGameFixture/Binaries/Win64/Runtime.dll': 'native runtime',
+            'Windows/Engine/Binaries/ThirdParty/CEF3/Win64/libcef.dll': 'browser runtime',
+            'Windows/Engine/Binaries/ThirdParty/CEF3/Win64/Resources/resources.pak': 'browser resources',
+            'Windows/AuroraViewGameFixture/Content/Paks/Demo.pak': 'cooked game',
+        }
+        private = {
+            'Windows/AuroraViewGameFixture/Binaries/Win64/AuroraViewGameFixture.PDB': 'private-symbol-user-path',
+            'Windows/Engine/Binaries/Win64/Runtime.pdb': 'private-symbol-toolchain-path',
+            'Windows/Manifest_DebugFiles_Win64.txt': 'private-debug-index',
+        }
+        for name, content in dict(native, **private).items():
+            write(archive / name, content)
+        self.identity['root'] = str(self.source / 'private-user-root')
+        self.receipt['compiler_toolchains'][0]['toolchain_path'] = 'private-compiler-path'
+        self.receipt['runtime']['private_token'] = 'private-runtime-token'
+        self.receipt['stage']['files_sha256'] = package_demo.validate_game.inventory(archive)
+        receipt_path = self.game / 'evidence/game-validation.json'
+        write(receipt_path, json.dumps(self.receipt))
+        with patch.object(package_demo, 'ROOT', self.source), \
+                patch.object(package_demo.build_plugin, 'git_identity', return_value=self.identity), \
+                patch.object(package_demo, 'microsoft_installer', return_value=signature()):
+            result = package_demo.package_demo(self.game, self.output)
+        manifest = json.loads((self.output / 'demo-package.json').read_text(encoding='utf-8'))
+        self.assertEqual(manifest['engine_build_id'], 'fixture-build')
+        self.assertEqual(manifest['engine_build_version_sha256'], self.receipt['engine']['version_sha256'])
+        self.assertEqual(manifest['verification']['game_receipt_sha256'], package_demo.build_plugin.sha256(receipt_path))
+        with zipfile.ZipFile(result['archive']) as bundle:
+            entries = {name.partition('/')[2]: bundle.read(name) for name in bundle.namelist()}
+        for name in private:
+            self.assertNotIn('Game/' + name, entries)
+            self.assertNotIn('Game/' + name, manifest['files_sha256'])
+            self.assertTrue((archive / name).is_file())
+        for name, content in native.items():
+            self.assertEqual(entries['Game/' + name], content.encode('utf-8'))
+            self.assertEqual(manifest['files_sha256']['Game/' + name], package_demo.build_plugin.sha256(archive / name))
+        public_metadata = entries['demo-package.json'] + entries['README.txt']
+        for forbidden in [str(self.source), str(self.engine), str(receipt_path), 'private-compiler-path',
+                          'private-runtime-token', 'private-symbol-user-path', 'private-debug-index']:
+            self.assertNotIn(forbidden.encode('utf-8'), public_metadata)
+        self.assertFalse(any(Path(name).name == 'game-validation.json' for name in entries))
 
     def test_older_runtime_family_is_rejected(self):
         with patch.object(package_demo, 'microsoft_installer', return_value=signature(version='14.43.99999.0')):

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -23,7 +24,7 @@ import validate_game
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'python'))
-from auroraview_unreal import Client, ConnectionClosedError
+from auroraview_unreal import Client, ConnectionClosedError, RemoteError
 
 
 def now():
@@ -186,6 +187,48 @@ def bundle_inputs(bundle):
                 source=manifest.get('source'), bundle_manifest_sha256=build_plugin.sha256(bundle / 'demo-package.json')), html
 
 
+def editor_session_project(prepared, session_dir):
+    """Keep verified build inputs immutable when Editor writes project config."""
+    source_root = Path(prepared['uproject']).resolve().parent.parent
+    destination = session_dir / 'Project'
+    destination.mkdir()
+    copied = {}
+    for name, digest in prepared['products_sha256'].items():
+        relative = PurePosixPath(name)
+        if (relative.is_absolute() or '..' in relative.parts or '\\' in name or ':' in name
+                or any(not part or part.rstrip('. ') != part for part in name.split('/'))):
+            raise build_plugin.BuildError('Unsafe prepared product path: ' + name)
+        if relative.parts[0] != 'Project' or 'Intermediate' in relative.parts:
+            continue
+        source = source_root / relative
+        if (not build_plugin.inside(source.resolve(), source_root / 'Project')
+                or source.is_symlink() or not source.is_file() or build_plugin.sha256(source) != digest):
+            raise build_plugin.BuildError('Prepared Editor input changed: ' + name)
+        target = session_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        if build_plugin.sha256(target) != digest:
+            raise build_plugin.BuildError('Editor session copy changed: ' + name)
+        copied[name] = digest
+    project = destination / Path(prepared['uproject']).name
+    if project.relative_to(session_dir).as_posix() not in copied:
+        raise build_plugin.BuildError('Prepared Editor has no recorded project descriptor')
+    (destination / 'Content').mkdir(exist_ok=True)
+    save(session_dir / 'editor-inputs.json', dict(products_sha256=copied))
+    return project
+
+
+def dock_editor_view(client, timeout=30):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return client.call('editor.view.dock', {'id': 'LiveDemo'})
+        except RemoteError as error:
+            if error.code != 'EDITOR_UNAVAILABLE' or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
+
+
 def launch(prepared, html, output, session_seconds):
     session_dir = output / ('Session-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + secrets.token_hex(3))
     session_dir.mkdir()
@@ -195,9 +238,10 @@ def launch(prepared, html, output, session_seconds):
         reservation.bind(('127.0.0.1', 0))
         port = reservation.getsockname()[1]
     mode, executable = prepared['mode'], Path(prepared['executable'])
+    uproject = editor_session_project(prepared, session_dir) if mode == 'editor' else None
     command = [str(executable)]
     if mode == 'editor':
-        command += [prepared['uproject'], '/Engine/Maps/Entry']
+        command += [str(uproject), '/Engine/Maps/Entry']
     command += ['-AuroraViewDemo', '-AuroraViewAllowControl', '-AuroraViewHostPort=' + str(port),
                 '-AuroraViewHostToken=' + token, '-NoSplash', '-NoSound', '-NoLiveCoding',
                 '-Windowed', '-ResX=1000', '-ResY=720', '-d3d11', '-NoVSync',
@@ -206,6 +250,8 @@ def launch(prepared, html, output, session_seconds):
                   engine_version=prepared['engine_version'], pid=None, port=port,
                   arguments=[arg.replace(token, '<redacted>') for arg in command[1:]],
                   browser_ready=False, events=[], exit_code=None, forced_cleanup=False)
+    if uproject:
+        result['uproject'] = str(uproject)
     lock = threading.Lock()
 
     def record(kind, data):
@@ -257,7 +303,7 @@ def launch(prepared, html, output, session_seconds):
             'presentation': 'docked' if mode == 'editor' else 'floating',
             'html': html.read_text(encoding='utf-8')})
         if mode == 'editor':
-            client.call('editor.view.dock', {'id': 'LiveDemo'})
+            dock_editor_view(client)
         if not tools.browser_ready.wait(45):
             raise build_plugin.BuildError('The real CEF dashboard did not finish its Core/Python handshake')
         presentation = client.call('auroraview.view.describe', {'id': 'LiveDemo'})

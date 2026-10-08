@@ -6,7 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import run_demo
@@ -68,6 +68,68 @@ class DemoLaunchGuards(unittest.TestCase):
         output.mkdir()
         with self.assertRaises(FileExistsError):
             run_demo.isolated_output(output, [protected])
+
+    def editor_inputs(self):
+        build = self.root / 'Build'
+        project = build / 'Project'
+        inputs = {
+            'AuroraViewGameFixture.uproject': b'{"FileVersion":3}',
+            'Config/DefaultEngine.ini': b'[Engine]\nOriginal=True\n',
+            'Binaries/Win64/UnrealEditor-AuroraViewGameFixture.dll': b'verified native build',
+            'Source/AuroraViewGameFixture.Target.cs': b'public class FixtureTarget {}',
+        }
+        products = {}
+        for relative, data in inputs.items():
+            path = project / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            products['Project/' + relative] = run_demo.build_plugin.sha256(path)
+        return dict(uproject=str(project / 'AuroraViewGameFixture.uproject'), products_sha256=products)
+
+    def test_editor_config_writes_do_not_change_verified_build_or_next_session(self):
+        prepared = self.editor_inputs()
+        first, second = self.root / 'First', self.root / 'Second'
+        first.mkdir()
+        second.mkdir()
+        runtime = run_demo.editor_session_project(prepared, first)
+        (runtime.parent / 'Config/DefaultEngine.ini').write_bytes(b'Editor generated settings')
+        reopened = run_demo.editor_session_project(prepared, second)
+        original = Path(prepared['uproject']).parent / 'Config/DefaultEngine.ini'
+        self.assertEqual((reopened.parent / 'Config/DefaultEngine.ini').read_bytes(), original.read_bytes())
+        self.assertEqual(run_demo.build_plugin.sha256(original), prepared['products_sha256']['Project/Config/DefaultEngine.ini'])
+
+    def test_editor_copy_rejects_changed_input_and_path_escape(self):
+        prepared = self.editor_inputs()
+        first, second = self.root / 'First', self.root / 'Second'
+        first.mkdir()
+        second.mkdir()
+        (Path(prepared['uproject']).parent / 'Config/DefaultEngine.ini').write_bytes(b'changed')
+        with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'input changed'):
+            run_demo.editor_session_project(prepared, first)
+        prepared['products_sha256'] = {'Project/../../escape.dll': '0' * 64}
+        with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'Unsafe prepared'):
+            run_demo.editor_session_project(prepared, second)
+
+    def test_dock_retries_only_layout_readiness_and_returns_real_attachment(self):
+        client = Mock()
+        state = {'attached_to_root_window': True}
+        client.call.side_effect = [run_demo.RemoteError('EditorUnavailable', 'Layout not ready', 'EDITOR_UNAVAILABLE'), state]
+        with patch.object(run_demo.time, 'sleep') as sleep:
+            self.assertIs(run_demo.dock_editor_view(client), state)
+        self.assertEqual(client.call.call_count, 2)
+        sleep.assert_called_once_with(0.2)
+
+    def test_dock_preserves_hard_failure_and_bounds_readiness_wait(self):
+        client = Mock()
+        client.call.side_effect = run_demo.RemoteError('DockFailed', 'Native attachment failed', 'VIEW_DOCK_FAILED')
+        with patch.object(run_demo.time, 'sleep') as sleep:
+            with self.assertRaises(run_demo.RemoteError):
+                run_demo.dock_editor_view(client)
+            sleep.assert_not_called()
+        client.call.side_effect = run_demo.RemoteError('EditorUnavailable', 'Layout not ready', 'EDITOR_UNAVAILABLE')
+        with patch.object(run_demo.time, 'monotonic', side_effect=[1.0, 2.0]):
+            with self.assertRaises(run_demo.RemoteError):
+                run_demo.dock_editor_view(client, timeout=0.5)
 
     def test_client_close_failure_still_waits_redacts_and_finalizes(self):
         output = self.root / 'Run'

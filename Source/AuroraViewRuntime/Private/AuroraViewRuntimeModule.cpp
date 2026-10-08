@@ -2,6 +2,7 @@
 #include "AuroraViewControlHost.h"
 #include "AuroraViewCompatibility.h"
 #include "AuroraViewEndpoint.h"
+#include "BrowserDocumentStartup.h"
 #include "Containers/Ticker.h"
 #include "Dom/JsonObject.h"
 #include "Framework/Application/SlateApplication.h"
@@ -27,7 +28,6 @@
 #include "Widgets/SWindow.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Text/STextBlock.h"
-#include <atomic>
 
 DEFINE_LOG_CATEGORY_STATIC(LogAuroraView, Log, All);
 
@@ -93,6 +93,8 @@ struct FSession final : TSharedFromThis<FSession>
     FString OwnedUrl;
     FString Bridge;
     FString Transport;
+    FString PendingDocument;
+    std::shared_ptr<AuroraView::BrowserDocumentStartup> DocumentStartup;
     TSharedPtr<IWebBrowserWindow> NativeBrowser;
     TSharedPtr<SWebBrowser> Browser;
     TSharedPtr<SWindow> Window;
@@ -182,6 +184,20 @@ struct FSession final : TSharedFromThis<FSession>
     bool bReady = false;
     bool bBootAttempted = false;
     double ReadyDeadline = 0.0;
+
+    void LoadPendingDocument()
+    {
+        check(IsInGameThread());
+        if (bDisposing || !Browser.IsValid() || !DocumentStartup || !Mailbox->IsCurrent(Generation)) return;
+        const auto BrowserToLoad = Browser;
+        // IsLoaded also covers initial completion before our delegate was bound.
+        // Keep the opening deadline; a late first frame must never start a load.
+        if (FPlatformTime::Seconds() > ReadyDeadline
+            || !DocumentStartup->BeginOwnedDocument(BrowserToLoad->GetUrl() == TEXT("about:blank") && BrowserToLoad->IsLoaded())) return;
+        const FString Document = MoveTemp(PendingDocument);
+        const FString Url = OwnedUrl;
+        BrowserToLoad->LoadString(Document, Url);
+    }
 
     void Emit(const FString& Event, const TSharedRef<FJsonObject>& Detail)
     {
@@ -321,6 +337,9 @@ struct FSession final : TSharedFromThis<FSession>
         // Retire ownership before native destruction can call user code. Locals
         // hold this presentation only; a later open must not be torn down here.
         Mailbox->Close();
+        if (DocumentStartup) DocumentStartup->Close();
+        DocumentStartup.reset();
+        PendingDocument.Empty();
         ++TabEpoch; ++DockRequest;
         bReady = false; bBootAttempted = false; SeenIds.Reset();
         const auto OldBrowser = MoveTemp(Browser);
@@ -392,6 +411,7 @@ struct FSession final : TSharedFromThis<FSession>
             UE_LOG(LogAuroraView, Error, TEXT("AuroraView bridge startup timed out; closing failed view"));
             Dispose(true);
         }
+        else LoadPendingDocument();
     }
 
     void UpdateBrowserParent()
@@ -597,6 +617,8 @@ bool FAuroraViewRuntimeModule::OpenPresentation(FName Id, const FString& Fragmen
     Session->OwnedUrl = TEXT("https://") + FGuid::NewGuid().ToString(EGuidFormats::Digits)
         + TEXT(".auroraview.invalid/index.html");
     Session->ReadyDeadline = FPlatformTime::Seconds() + 10.0;
+    Session->DocumentStartup = std::make_shared<AuroraView::BrowserDocumentStartup>();
+    Session->PendingDocument = MakeDocument(Stub, Bootstrap, Fragment);
     FCreateBrowserWindowSettings Settings;
     Settings.InitialURL = TEXT("about:blank");
     Settings.bShowErrorMessage = false;
@@ -605,6 +627,9 @@ bool FAuroraViewRuntimeModule::OpenPresentation(FName Id, const FString& Fragmen
     if (!Session->NativeBrowser.IsValid())
     {
         Session->Mailbox->Close();
+        Session->DocumentStartup->Close();
+        Session->DocumentStartup.reset();
+        Session->PendingDocument.Empty();
         OutError = TEXT("Engine declined native browser creation");
         return false;
     }
@@ -613,15 +638,18 @@ bool FAuroraViewRuntimeModule::OpenPresentation(FName Id, const FString& Fragmen
     const auto Mailbox = Session->Mailbox;
     const uint64 Epoch = Session->Generation;
     const FString Url = Session->OwnedUrl;
-    const auto NavigationUsed = std::make_shared<std::atomic<bool>>(false);
+    const auto DocumentStartup = Session->DocumentStartup;
     Session->Browser = SNew(SWebBrowser, Session->NativeBrowser)
         .ShowControls(false)
         .ShowAddressBar(false)
-        .OnBeforeNavigation_Lambda([Url, NavigationUsed](const FString& NewUrl, const FWebNavigationRequest& Request)
+        .OnBeforeNavigation_Lambda([Url, DocumentStartup, Mailbox, Epoch](const FString& NewUrl, const FWebNavigationRequest& Request)
         {
-            // No subframes, redirects, external pages, file URLs or arbitrary schemes.
-            if (!Request.bIsMainFrame || Request.bIsRedirect || NewUrl != Url) return true;
-            return NavigationUsed->exchange(true);
+            // Only the controlled initial blank and one owned document may load.
+            using Document = AuroraView::BrowserDocumentStartup::Document;
+            const auto Target = NewUrl == TEXT("about:blank") ? Document::Initial
+                : (NewUrl == Url ? Document::Owned : Document::Other);
+            return !Mailbox->IsCurrent(Epoch)
+                || !DocumentStartup->AllowNavigation(Target, Request.bIsMainFrame, Request.bIsRedirect);
         })
         .OnBeforePopup_Lambda([](FString, FString) { return true; })
         .OnLoadCompleted_Lambda([Mailbox, Epoch]() { Mailbox->PushControl(Epoch, AuroraView::SessionMailbox::Kind::Loaded); })
@@ -629,7 +657,6 @@ bool FAuroraViewRuntimeModule::OpenPresentation(FName Id, const FString& Fragmen
     const auto Browser = Session->Browser;
     const auto NativeBrowser = Session->NativeBrowser;
     const auto Factory = Session->ContentFactory;
-    const FString Document = MakeDocument(Stub, Bootstrap, Fragment);
     const FText PresentationTitle = Title;
     const uint64 PresentationEpoch = Session->TabEpoch;
     const auto IsCurrent = [this, Id, Session, Epoch, Browser, NativeBrowser, DockTab, PresentationEpoch]()
@@ -672,8 +699,7 @@ bool FAuroraViewRuntimeModule::OpenPresentation(FName Id, const FString& Fragmen
         { OutError = TEXT("Window open interrupted by a retired or replaced presentation"); return false; }
     }
     if (!IsCurrent()) { OutError = TEXT("View open interrupted"); return false; }
-    Browser->LoadString(Document, Url);
-    if (!IsCurrent()) { OutError = TEXT("View load interrupted"); return false; }
+    // Pump loads the owned document exactly once after the initial frame completes.
     OutError.Empty();
     return true;
 }

@@ -1,4 +1,5 @@
 #include "SessionMailbox.h"
+#include "BrowserDocumentStartup.h"
 #include <atomic>
 #include <cassert>
 #include <iostream>
@@ -6,6 +7,8 @@
 #include <vector>
 
 using AuroraView::SessionMailbox;
+using AuroraView::BrowserDocumentStartup;
+using Document = BrowserDocumentStartup::Document;
 
 int main()
 {
@@ -144,5 +147,102 @@ int main()
         assert(M.Drain().empty() && !M.IsCurrent(G));
         ++Cases;
     }
-    std::cout << "PASS: " << Cases << " native mailbox lifecycle/concurrency cases\n";
+    {
+        BrowserDocumentStartup Startup;
+        assert(!Startup.BeginOwnedDocument(false));
+        assert(!Startup.AllowNavigation(Document::Owned, true, false));
+        assert(Startup.AllowNavigation(Document::Initial, true, false));
+        assert(!Startup.AllowNavigation(Document::Initial, true, false));
+        assert(!Startup.BeginOwnedDocument(false));
+        assert(Startup.BeginOwnedDocument(true));
+        assert(!Startup.BeginOwnedDocument(true));
+        assert(Startup.AllowNavigation(Document::Owned, true, false));
+        assert(!Startup.AllowNavigation(Document::Owned, true, false));
+        assert(!Startup.AllowNavigation(Document::Initial, true, false));
+        ++Cases;
+    }
+    {
+        BrowserDocumentStartup Startup;
+        // Rejected subframes, redirects and external URLs consume no admission.
+        assert(!Startup.AllowNavigation(Document::Initial, false, false));
+        assert(!Startup.AllowNavigation(Document::Initial, true, true));
+        assert(!Startup.AllowNavigation(Document::Other, true, false));
+        assert(Startup.AllowNavigation(Document::Initial, true, false));
+        assert(Startup.BeginOwnedDocument(true));
+        assert(!Startup.AllowNavigation(Document::Owned, false, false));
+        assert(!Startup.AllowNavigation(Document::Owned, true, true));
+        assert(!Startup.AllowNavigation(Document::Other, true, false));
+        assert(Startup.AllowNavigation(Document::Owned, true, false));
+        ++Cases;
+    }
+    {
+        BrowserDocumentStartup Startup;
+        // The initial document can complete before delegates are installed.
+        // Later ticks and duplicate completion notifications still load once.
+        int Loads = 0;
+        for (int i = 0; i < 20; ++i) if (Startup.BeginOwnedDocument(true)) ++Loads;
+        assert(Loads == 1);
+        ++Cases;
+    }
+    {
+        BrowserDocumentStartup Retired, Fresh;
+        Retired.Close(); Retired.Close();
+        assert(!Retired.BeginOwnedDocument(true));
+        assert(!Retired.AllowNavigation(Document::Initial, true, false));
+        assert(!Retired.AllowNavigation(Document::Owned, true, false));
+        assert(Fresh.BeginOwnedDocument(true));
+        assert(Fresh.AllowNavigation(Document::Owned, true, false));
+        Fresh.Close();
+        assert(!Fresh.BeginOwnedDocument(true));
+        ++Cases;
+    }
+    {
+        SessionMailbox M;
+        BrowserDocumentStartup Retired, Fresh;
+        auto Old = M.Open();
+        assert(M.PushControl(Old, SessionMailbox::Kind::Loaded));
+        auto Delayed = M.Drain();
+        M.Close(); Retired.Close();
+        auto Current = M.Open();
+        int Loads = 0;
+        for (const auto& Message : Delayed)
+            if (M.IsCurrent(Message.Generation) && Fresh.BeginOwnedDocument(true)) ++Loads;
+        assert(Loads == 0 && !Retired.BeginOwnedDocument(true));
+        assert(!M.PushControl(Old, SessionMailbox::Kind::Loaded));
+        assert(M.PushControl(Current, SessionMailbox::Kind::Loaded));
+        assert(M.IsCurrent(M.Drain().front().Generation) && Fresh.BeginOwnedDocument(true));
+        ++Cases;
+    }
+    {
+        SessionMailbox M;
+        BrowserDocumentStartup Startup;
+        auto G = M.Open();
+        assert(M.PushControl(G, SessionMailbox::Kind::Loaded));
+        assert(M.PushControl(G, SessionMailbox::Kind::LoadError));
+        auto Work = M.Drain();
+        assert(Work.front().Type == SessionMailbox::Kind::LoadError);
+        M.Close(); Startup.Close();
+        for (const auto& Message : Work) assert(!M.IsCurrent(Message.Generation));
+        assert(!Startup.BeginOwnedDocument(true));
+        ++Cases;
+    }
+    {
+        BrowserDocumentStartup Startup;
+        std::vector<std::thread> Workers;
+        std::atomic<int> Admissions{0};
+        for (int i = 0; i < 8; ++i) Workers.emplace_back([&]() {
+            for (int j = 0; j < 64; ++j)
+                if (Startup.AllowNavigation(Document::Initial, true, false)) ++Admissions;
+        });
+        for (auto& Worker : Workers) Worker.join();
+        assert(Admissions == 1);
+        Workers.clear(); Admissions = 0;
+        for (int i = 0; i < 8; ++i) Workers.emplace_back([&]() {
+            if (Startup.BeginOwnedDocument(true)) ++Admissions;
+        });
+        for (auto& Worker : Workers) Worker.join();
+        assert(Admissions == 1);
+        ++Cases;
+    }
+    std::cout << "PASS: " << Cases << " native mailbox/startup lifecycle/concurrency cases\n";
 }

@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "AuroraViewEditorModule.h"
+#include "AuroraViewCompatibility.h"
 #include "Dom/JsonObject.h"
 #include "Framework/Docking/TabManager.h"
 #include "HAL/PlatformTime.h"
@@ -11,6 +12,7 @@
 namespace
 {
 const FName DockA(TEXT("DockAcceptanceA")), DockB(TEXT("DockAcceptanceB"));
+const FName DetailsId(TEXT("LevelEditorSelectionDetails"));
 const FString DockHtml = TEXT("<h1>Actual docked CEF lifecycle test</h1><script>")
     TEXT("addEventListener('auroraviewready',()=>auroraview.call('test.echo',{ok:true}).then(v=>auroraview.call('test.docked',v.ok===true)));</script>");
 FAuroraViewReply OpenControlDock(FAuroraViewRuntimeModule& Module, FName Id, const FString& Html = DockHtml)
@@ -43,6 +45,7 @@ struct FDockState
     int32 ReportsA = 0, ReportsB = 0;
     int32 Phase = 0;
     uint64 FirstGeneration = 0;
+    bool bObservedDetailsClosed = false;
     FString FirstLayoutId;
     double Deadline = 0;
 };
@@ -85,12 +88,41 @@ public:
             Test->TestTrue(TEXT("Control open rejects changing live dock content"), !Changed.bOk && Changed.ErrorCode == TEXT("VIEW_OPEN_FAILED"));
             Test->TestEqual(TEXT("Rejected rebind preserves the current browser"), Module.GetGeneration(DockA), State->FirstGeneration);
             const auto TargetManager = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
+            const auto Details = TargetManager.IsValid()
+                ? AuroraViewCompatibility::TryInvokeTab(TargetManager.ToSharedRef(), DetailsId) : TSharedPtr<SDockTab>();
+            if (!Details.IsValid() || !Details->RequestCloseTab())
+            {
+                Test->AddError(TEXT("Could not close the native Details tab for the docking readiness regression"));
+                Module.Remove(DockA); Module.Remove(DockB); return true;
+            }
+            State->Phase = 1;
+            return false;
+        }
+        if (State->Phase == 1)
+        {
+            const auto TargetManager = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
+            if (!TargetManager.IsValid()) return false;
+            if (!State->bObservedDetailsClosed)
+            {
+                if (TargetManager->FindExistingLiveTab(DetailsId).IsValid()) return false;
+                State->bObservedDetailsClosed = true;
+                FString Error;
+                Test->TestFalse(TEXT("Runtime refuses a closed native destination until the Editor tool opens it"),
+                    Runtime.DockInTabManager(DockA, TargetManager.ToSharedRef(), DetailsId, Error));
+                Test->TestEqual(TEXT("Rejected destination preserves the current browser generation"), Module.GetGeneration(DockA), State->FirstGeneration);
+            }
             const auto DockReply = AttachControlDock(Runtime, DockA);
-            if (!TargetManager.IsValid() || !DockReply.bOk)
+            if (!DockReply.bOk && DockReply.ErrorCode == TEXT("EDITOR_UNAVAILABLE")) return false;
+            if (!DockReply.bOk)
             {
                 Test->AddError(TEXT("Native Editor root attachment failed: ") + DockReply.ErrorMessage);
                 Module.Remove(DockA); Module.Remove(DockB); return true;
             }
+            Test->TestTrue(TEXT("Registered Editor docking tool reopens the closed native Details destination"),
+                TargetManager->FindExistingLiveTab(DetailsId).IsValid());
+            const auto NativeTab = TargetManager->FindExistingLiveTab(FName(TEXT("AuroraView.View.DockAcceptanceA")));
+            if (!NativeTab.IsValid())
+            { Test->AddError(TEXT("Attached native tab is missing from the Level Editor manager")); Module.Remove(DockA); Module.Remove(DockB); return true; }
             const auto Attached = Runtime.DescribeView(DockA);
             Test->TestTrue(TEXT("Native dock move attaches the actual tab to the Editor root"), Attached->GetBoolField(TEXT("attached_to_root_window")));
             Test->TestTrue(TEXT("Native dock move retains browser readiness"), Attached->GetBoolField(TEXT("ready")));
@@ -104,31 +136,32 @@ public:
             Test->TestTrue(TEXT("Close A preserves B"), Module.IsReady(DockB));
             const auto Closed = Runtime.DescribeView(DockA);
             Test->TestTrue(TEXT("Closed native state retains registration but no live presentation"), Closed->GetBoolField(TEXT("dock_registered")) && !Closed->GetBoolField(TEXT("tab_open")) && !Closed->GetBoolField(TEXT("open")) && Closed->GetNumberField(TEXT("generation")) == 0);
-            State->Phase = 1;
+            State->Phase = 2;
             return false;
         }
-        if (State->Phase == 1)
+        if (State->Phase == 2)
         {
             if (FGlobalTabmanager::Get()->FindExistingLiveTab(FName(TEXT("AuroraView.View.DockAcceptanceA"))).IsValid())
                 return false;
             const auto Reply = OpenControlDock(Runtime, DockA);
             if (!Reply.bOk) Test->AddError(Reply.ErrorMessage);
-            State->Phase = 2;
+            State->Phase = 3;
             return false;
         }
         if (State->ReportsA != 2) return false;
         Test->TestTrue(TEXT("Same-ID reopen uses a fresh generation"), Module.GetGeneration(DockA) > State->FirstGeneration);
         const uint64 ReopenedGeneration = Module.GetGeneration(DockA);
         const auto TargetManager = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
-        const auto Destination = TargetManager.IsValid() ? TargetManager->FindExistingLiveTab(FName(TEXT("LevelEditorSelectionDetails"))) : TSharedPtr<SDockTab>();
-        Test->TestTrue(TEXT("Same-ID reopened browser can attach to its native Editor stack again"),
-            TargetManager.IsValid() && AttachControlDock(Runtime, DockA).bOk);
+        const auto Destination = TargetManager.IsValid() ? TargetManager->FindExistingLiveTab(DetailsId) : TSharedPtr<SDockTab>();
+        const auto DockReply = AttachControlDock(Runtime, DockA);
+        if (!DockReply.bOk && DockReply.ErrorCode == TEXT("EDITOR_UNAVAILABLE")) return false;
+        Test->TestTrue(TEXT("Same-ID reopened browser can attach to its native Editor stack again"), TargetManager.IsValid() && DockReply.bOk);
         const auto Reattached = Runtime.DescribeView(DockA);
         Test->TestTrue(TEXT("Reopened browser is actually attached to the Editor root"), Reattached->GetBoolField(TEXT("attached_to_root_window")));
         Test->TestEqual(TEXT("Reattaching does not restart the reopened browser"), Module.GetGeneration(DockA), ReopenedGeneration);
         Test->TestTrue(TEXT("Slate assigns a new transient document instance on reopened attachment"), Reattached->GetStringField(TEXT("tab_layout_id")) != State->FirstLayoutId);
         Test->TestTrue(TEXT("Attachment preserves the existing native destination tab"), Destination.IsValid()
-            && TargetManager->FindExistingLiveTab(FName(TEXT("LevelEditorSelectionDetails"))) == Destination);
+            && TargetManager->FindExistingLiveTab(DetailsId) == Destination);
         Test->TestEqual(TEXT("B did not reload during A close/reopen"), State->ReportsB, 1);
         Test->TestTrue(TEXT("Remove A succeeds"), Module.Remove(DockA));
         Test->TestTrue(TEXT("Remove B succeeds"), Module.Remove(DockB));

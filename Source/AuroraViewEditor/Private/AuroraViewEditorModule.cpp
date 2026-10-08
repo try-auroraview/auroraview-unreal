@@ -10,7 +10,11 @@
 #include "Misc/Paths.h"
 #include "Misc/CoreDelegates.h"
 #include "Dom/JsonObject.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Docking/TabManager.h"
 #include "LevelEditor.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/SWindow.h"
 
 namespace {
 FAuroraViewRuntimeModule& Host() {
@@ -21,13 +25,30 @@ FAuroraViewReply DockEditorView(const TSharedPtr<FJsonValue>& Params) {
     const auto Args = Params.IsValid() && Params->Type == EJson::Object ? Params->AsObject() : nullptr;
     if (!Args.IsValid() || !Args->TryGetStringField(TEXT("id"), Id) || Id.IsEmpty() || Id.Len() > 128)
         return FAuroraViewReply::Failure(TEXT("InvalidParams"), TEXT("A view id is required"), TEXT("INVALID_PARAMS"));
-    if (!GEditor || IsRunningCommandlet())
+    if (!GEditor || IsRunningCommandlet() || !FSlateApplication::IsInitialized())
         return FAuroraViewReply::Failure(TEXT("EditorUnavailable"), TEXT("An interactive Editor is required"), TEXT("EDITOR_UNAVAILABLE"));
     const auto Manager = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
-    if (!Manager.IsValid())
+    const auto Root = FGlobalTabmanager::Get()->GetRootWindow();
+    const auto Owner = Manager.IsValid() ? Manager->GetOwnerTab() : TSharedPtr<SDockTab>();
+    if (!Root.IsValid() || !Root->GetNativeWindow().IsValid() || !Owner.IsValid() || Owner->GetParentWindow() != Root)
         return FAuroraViewReply::Failure(TEXT("EditorUnavailable"), TEXT("The Level Editor layout is not ready"), TEXT("EDITOR_UNAVAILABLE"));
+    FName DestinationId(TEXT("LevelEditorSelectionDetails"));
+    auto Destination = Manager->FindExistingLiveTab(DestinationId);
+    if (!Destination.IsValid())
+        Destination = AuroraViewCompatibility::TryInvokeTab(Manager.ToSharedRef(), DestinationId);
+    if (!Destination.IsValid() || !Destination->GetParentWindow().IsValid())
+        return FAuroraViewReply::Failure(TEXT("EditorUnavailable"), TEXT("The Details tab has not joined the Editor layout"), TEXT("EDITOR_UNAVAILABLE"));
+    if (Destination->GetParentWindow() != Root)
+    {
+        // Respect a user's floating Details window. Only use an existing root
+        // viewport as an alternative; never relocate another native tab.
+        DestinationId = FName(TEXT("LevelEditorViewport"));
+        Destination = Manager->FindExistingLiveTab(DestinationId);
+    }
+    if (!Destination.IsValid() || Destination->GetParentWindow() != Root)
+        return FAuroraViewReply::Failure(TEXT("EditorUnavailable"), TEXT("No native destination is attached to the Editor root window"), TEXT("EDITOR_UNAVAILABLE"));
     FString Error;
-    if (!Host().DockInTabManager(FName(*Id), Manager.ToSharedRef(), TEXT("LevelEditorSelectionDetails"), Error))
+    if (!Host().DockInTabManager(FName(*Id), Manager.ToSharedRef(), DestinationId, Error))
         return FAuroraViewReply::Failure(TEXT("DockFailed"), Error, TEXT("VIEW_DOCK_FAILED"));
     return FAuroraViewReply::Success(MakeShared<FJsonValueObject>(Host().DescribeView(FName(*Id))));
 }

@@ -1,3 +1,5 @@
+# Stable bytes make package receipts portable across Git/ZIP checkouts.
+* text=auto eol=lf
 # Vendored upstream assets are pinned byte-for-byte by manifest.json.
 ThirdParty/AuroraViewCore/* -text
 Resources/legacy/* -text

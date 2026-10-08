@@ -48,14 +48,24 @@ FAuroraViewReply DockEditorView(const TSharedPtr<FJsonValue>& Params) {
     auto Destination = Manager->FindExistingLiveTab(DestinationId);
     if (!Destination.IsValid())
         Destination = AuroraViewCompatibility::TryInvokeTab(Manager.ToSharedRef(), DestinationId);
-    if (!Destination.IsValid() || !Destination->GetParentWindow().IsValid())
-        return FAuroraViewReply::Failure(TEXT("EditorUnavailable"), TEXT("The Details tab has not joined the Editor layout"), TEXT("EDITOR_UNAVAILABLE"));
-    if (Destination->GetParentWindow() != Root)
+    if (!Destination.IsValid() || Destination->GetParentWindow() != Root)
     {
-        // Respect a user's floating Details window. Only use an existing root
-        // viewport as an alternative; never relocate another native tab.
-        DestinationId = FName(TEXT("LevelEditorViewport"));
-        Destination = Manager->FindExistingLiveTab(DestinationId);
+        // InvokeTab may reuse a closed Details tab whose native parent is gone.
+        // Missing, parentless and floating Details all use an existing root
+        // viewport instead. Never repair another tab's spawner or relocate it.
+        const FName ViewportIds[] = { FName(TEXT("LevelEditorViewport")),
+            FName(TEXT("LevelEditorViewport_Clone1")), FName(TEXT("LevelEditorViewport_Clone2")),
+            FName(TEXT("LevelEditorViewport_Clone3")), FName(TEXT("LevelEditorViewport_Clone4")) };
+        for (const FName ViewportId : ViewportIds)
+        {
+            const auto Viewport = Manager->FindExistingLiveTab(ViewportId);
+            if (Viewport.IsValid() && Viewport->GetParentWindow() == Root)
+            {
+                DestinationId = ViewportId;
+                Destination = Viewport;
+                break;
+            }
+        }
     }
     if (!Destination.IsValid() || Destination->GetParentWindow() != Root)
         return FAuroraViewReply::Failure(TEXT("EditorUnavailable"), TEXT("No native destination is attached to the Editor root window"), TEXT("EDITOR_UNAVAILABLE"));

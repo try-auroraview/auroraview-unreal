@@ -89,13 +89,16 @@ def verify_inputs(engine, package):
 
 
 DDC_GRAPH = 'AuroraViewValidationDDC'
-DDC_DIRECTORY = 'DerivedDataCache/AuroraViewValidation'
+DDC_DIRECTORY = 'DerivedDataCache'
 
 
 def configure_project_cache(project, version):
     """Select only a writable project-owned file cache, without shared overrides."""
     if version not in preflight_engine.SUPPORTED_VERSIONS:
         raise build_plugin.BuildError('Unsupported cache configuration version: ' + version)
+    cache = project / DDC_DIRECTORY
+    if version.startswith('4.') and len(str(cache.resolve())) > 119:
+        raise build_plugin.BuildError('UE4 cache paths are limited to 119 characters; use a shorter output directory')
     local = ('Type=FileSystem,ReadOnly=false,Clean=false,Flush=false,DeleteUnused=false,'
              'Path="%GAMEDIR%' + DDC_DIRECTORY + '"')
     if version == '5.8':
@@ -115,7 +118,6 @@ def configure_project_cache(project, version):
         packaging.write_text(packaging.read_text(encoding='utf-8') +
                              '\n[/Script/UnrealEd.ProjectPackagingSettings]\nbUseZenStore=False\n',
                              encoding='utf-8')
-    cache = project / DDC_DIRECTORY
     cache.mkdir(parents=True)
     probe = cache / ('.write-probe-' + secrets.token_hex(8))
     created = False

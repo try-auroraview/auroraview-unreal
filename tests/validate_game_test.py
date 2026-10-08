@@ -270,11 +270,11 @@ class PackagedGameGuards(unittest.TestCase):
                     local = nodes['Local']
                 self.assertIn('Type=FileSystem', local)
                 self.assertIn('ReadOnly=false', local)
-                self.assertIn('Path="%GAMEDIR%DerivedDataCache/AuroraViewValidation"', local)
+                self.assertIn('Path="%GAMEDIR%DerivedDataCache"', local)
                 for external in ['Zen', 'Shared', 'Cloud', 'Override']:
                     self.assertNotIn(external, '\n'.join(nodes.values()))
                 self.assertNotIn(str(project), text)
-                cache = project / 'DerivedDataCache/AuroraViewValidation'
+                cache = project / 'DerivedDataCache'
                 self.assertTrue(cache.is_dir())
                 self.assertEqual(list(cache.iterdir()), [])
                 self.assertEqual(receipt['directory'], str(cache))
@@ -285,6 +285,14 @@ class PackagedGameGuards(unittest.TestCase):
                 packaging.read(project / 'Config/DefaultGame.ini', encoding='utf-8')
                 if version.startswith('5.'):
                     self.assertFalse(packaging.getboolean('/Script/UnrealEd.ProjectPackagingSettings', 'bUseZenStore'))
+
+    def test_legacy_cache_path_limit_fails_before_native_cook_or_config_writes(self):
+        for version in ('4.18', '4.26'):
+            with self.subTest(version=version):
+                project = self.root / ('long-project-' + 'x' * 120)
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, '119 characters'):
+                    validator.configure_project_cache(project, version)
+                self.assertFalse(project.exists())
 
 
 class StagedExecutableGuards(unittest.TestCase):

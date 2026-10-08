@@ -49,9 +49,11 @@ The listener is opt-in and loopback-only. Its private token grants trusted local
 
 ## Shared DCC-MCP backend boundary
 
-The native parent-IPC client is the current compatibility transport. Its working Python tools do not establish a completed shared DCC-MCP backend integration. The integration must consume the existing backend's public invocation, tool listing and removable event subscription interfaces, with a fixed published dependency version. It must preserve MCP structured results and errors.
+The optional shared consumer uses the public [`auroraview-dcc-mcp` 0.1.0 preview](https://github.com/try-auroraview/auroraview/releases/tag/auroraview-dcc-mcp-v0.1.0-preview.1). `Tool` declares schemas, annotations and synchronous business handlers; `ToolSet.borrow()` supplies tool listing, calls and removable subscriptions. `NativeToolBinding` publishes those declarations through the existing Unreal parent-IPC connection. The default demo retains its standard-library-only provider.
 
-Each panel borrows a backend session. Closing it removes only its bindings and subscriptions and cancels only its pending requests; it never stops a borrowed server or client. Unreal retains Slate/CEF ownership and GameThread dispatch. Shared Core owns portable session lifecycle. The candidate `BackendSession` contract is being developed upstream; it is not assumed to exist in the currently pinned assets or a stable Python release. No second DCC-MCP server, registry or scheduler is introduced for this boundary.
+Shared tool calls and event delivery run on the thread that created the `ToolSet`. Native SDK callbacks arrive on bounded workers, so `--shared-tools` dispatches them through the launcher's existing main loop. It creates no additional thread, event loop, server or registry. Closing the binding revokes queued work, unregisters only its own native tools and releases its borrowed session. It does not close the `ToolSet`, client or a borrowed server. The demo closes its own `ToolSet` separately when the host session ends.
+
+`tools.attach(existing_server)` requires an actual same-process DCC-MCP Core server. An external Python process cannot attach to the Editor's Python server object. Embedded Editor handlers must call Unreal APIs directly on GameThread; synchronously calling the same process's native control endpoint there would deadlock. Unreal continues to own Slate/CEF, native objects and GameThread scheduling. Existing pinned browser assets are unchanged by this Python integration. Shared Python contract tests, live MCP discovery and native browser/docking acceptance are separate evidence gates.
 
 ## Adapt the demo
 

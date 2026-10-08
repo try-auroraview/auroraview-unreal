@@ -21,6 +21,7 @@ import build_plugin
 import demo_tools
 import preflight_engine
 import validate_game
+from owner_dispatch import OwnerDispatcher
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'python'))
@@ -229,7 +230,21 @@ def dock_editor_view(client, timeout=30):
             time.sleep(0.2)
 
 
-def launch(prepared, html, output, session_seconds):
+def wait_for_browser(tools, process, timeout=45, dispatcher=None):
+    """Pump the caller's existing owner thread while workers await tool calls."""
+    deadline = time.monotonic() + timeout
+    while not tools.browser_ready.is_set():
+        if process.poll() is not None or time.monotonic() >= deadline:
+            return False
+        if dispatcher:
+            dispatcher.pump()
+        tools.browser_ready.wait(0.02)
+    return True
+
+
+def launch(prepared, html, output, session_seconds, shared_tools=False):
+    if shared_tools:
+        demo_tools.require_shared_tools()
     session_dir = output / ('Session-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + secrets.token_hex(3))
     session_dir.mkdir()
     receipt_path = session_dir / 'session.json'
@@ -263,6 +278,7 @@ def launch(prepared, html, output, session_seconds):
             save(receipt_path, result)
 
     process = client = tools = None
+    dispatcher = OwnerDispatcher() if shared_tools else None
     try:
         with (session_dir / 'console.log').open('wb') as stream:
             process = subprocess.Popen(command, cwd=executable.parent, stdout=stream, stderr=subprocess.STDOUT)
@@ -296,7 +312,11 @@ def launch(prepared, html, output, session_seconds):
                     raise build_plugin.BuildError('The owned demo scene did not become available')
                 time.sleep(0.2)
         result['world'], result['scene_object'] = scene
-        tools = demo_tools.DemoTools(client, scene[1], record)
+        if shared_tools:
+            tools = demo_tools.DemoTools(client, scene[1], record,
+                                         shared_tools=True, dispatcher=dispatcher)
+        else:
+            tools = demo_tools.DemoTools(client, scene[1], record)
         tools.register()
         client.call('auroraview.view.open', {
             'id': 'LiveDemo', 'title': 'AuroraView / Unreal ' + prepared['engine_version'] + ' / ' + mode.title(),
@@ -304,7 +324,7 @@ def launch(prepared, html, output, session_seconds):
             'html': html.read_text(encoding='utf-8')})
         if mode == 'editor':
             dock_editor_view(client)
-        if not tools.browser_ready.wait(45):
+        if not wait_for_browser(tools, process, dispatcher=dispatcher):
             raise build_plugin.BuildError('The real CEF dashboard did not finish its Core/Python handshake')
         presentation = client.call('auroraview.view.describe', {'id': 'LiveDemo'})
         if not presentation.get('ready') or (mode == 'editor' and (
@@ -321,6 +341,8 @@ def launch(prepared, html, output, session_seconds):
         while process.poll() is None:
             if (session_dir / 'stop.request').exists() or (session_seconds and time.monotonic() - started >= session_seconds):
                 break
+            if dispatcher:
+                dispatcher.pump()
             time.sleep(0.2)
     except KeyboardInterrupt:
         with lock:
@@ -336,6 +358,11 @@ def launch(prepared, html, output, session_seconds):
                 tools.close()
             except Exception as error:
                 cleanup_errors.append('Tool cleanup: ' + str(error))
+        if dispatcher:
+            try:
+                dispatcher.close()
+            except Exception as error:
+                cleanup_errors.append('Dispatcher cleanup: ' + str(error))
         if client:
             try:
                 if process.poll() is None:
@@ -390,6 +417,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True, help='New isolated output/run directory')
     parser.add_argument('--reuse', action='store_true', help='Reuse unchanged prepared build output')
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--shared-tools', action='store_true',
+                        help='Use the explicitly installed public auroraview-dcc-mcp 0.1.0 tool contracts')
     parser.add_argument('--timeout', type=int, default=2400)
     parser.add_argument('--session-seconds', type=int, default=0, help='Gracefully stop after N ready seconds; 0 keeps running')
     options = parser.parse_args()
@@ -425,7 +454,7 @@ def main():
         if options.prepare_only:
             print('Demo prepared: ' + str(output), flush=True)
             return 0
-        result = launch(prepared, html, output, options.session_seconds)
+        result = launch(prepared, html, output, options.session_seconds, options.shared_tools)
         return 0 if result['status'] == 'closed' else 1
     except (OSError, ValueError, build_plugin.BuildError) as error:
         print('Demo failed: ' + str(error), file=sys.stderr)

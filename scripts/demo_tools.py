@@ -4,6 +4,20 @@ import platform
 import threading
 import time
 
+
+def require_shared_tools():
+    """Load the explicitly installed public consumer package, without a server."""
+    try:
+        from importlib.metadata import version
+        from auroraview_dcc_mcp import Tool, ToolSet
+        from auroraview_unreal.native_tools import NativeToolBinding
+        installed = version('auroraview-dcc-mcp')
+    except ImportError as error:
+        raise ValueError('Install the pinned auroraview-unreal[dcc-mcp] extra before using --shared-tools') from error
+    if installed != '0.1.0':
+        raise ValueError('The shared demo requires auroraview-dcc-mcp 0.1.0')
+    return Tool, ToolSet, NativeToolBinding, installed
+
 SCENE_CLASS = '/Script/AuroraViewGameFixture.AuroraViewDemoScene'
 
 
@@ -39,11 +53,17 @@ def find_scene(client, context):
 class DemoTools:
     """Own the external tools; native objects remain owned by the sample project."""
 
-    def __init__(self, client, scene, record=lambda _kind, _data: None):
+    def __init__(self, client, scene, record=lambda _kind, _data: None, *,
+                 shared_tools=False, dispatcher=None):
         self.client, self.scene, self.record = client, scene, record
         self.lock = threading.Lock()
         self.browser_ready = threading.Event()
         self.unsubscribers = []
+        self.dispatcher = dispatcher
+        self.shared_binding = self.shared_owner = None
+        self.shared_api = require_shared_tools() if shared_tools else None
+        if shared_tools and not callable(dispatcher):
+            raise ValueError('Shared tools require the caller-owned thread dispatcher')
 
     def status(self):
         info = self.client.call('unreal.engine.info')
@@ -106,18 +126,82 @@ class DemoTools:
         self.record('browser.ready', data)
         self.browser_ready.set()
 
+    def _subscribe_shared(self, event, callback):
+        def deliver(data):
+            # Native SDK callbacks arrive on its existing workers. ToolSession
+            # delivery and the host operation belong to the demo owner thread.
+            pending = self.dispatcher(lambda: callback(data))
+            def completed(future):
+                if not future.cancelled() and future.exception() is not None:
+                    self.record('shared.event.failed', {'event': event,
+                                                       'error_type': type(future.exception()).__name__})
+            pending.add_done_callback(completed)
+        return self.client.on(event, deliver)
+
+    def _register_shared(self):
+        Tool, ToolSet, NativeToolBinding, installed = self.shared_api
+        empty = {'type': 'object', 'properties': {}, 'additionalProperties': False}
+        number = {'type': 'number', 'minimum': -1000000, 'maximum': 1000000}
+        state = {'type': 'object', 'properties': {
+            'height': {'type': 'number', 'minimum': 0, 'maximum': 300},
+            'revision': {'type': 'integer', 'minimum': 0}}, 'required': ['height', 'revision']}
+        declarations = [
+            Tool('demo.status', 'Read the bound Unreal host and actual demo scene.', empty,
+                 self.status, output_schema={'type': 'object'},
+                 read_only=True, destructive=False, idempotent=True),
+            Tool('demo.python.multiply', 'Multiply two finite numbers in external Python.',
+                 {'type': 'object', 'properties': {'left': number, 'right': number},
+                  'required': ['left', 'right'], 'additionalProperties': False},
+                 self.multiply, output_schema={'type': 'object', 'properties': {
+                     'value': {'type': 'number'}, 'python_version': {'type': 'string'}},
+                     'required': ['value', 'python_version']},
+                 read_only=True, destructive=False, idempotent=True),
+            Tool('demo.scene.set_height', 'Lift the cube and read back its native height and revision.',
+                 {'type': 'object', 'properties': {'height': {
+                     'type': 'number', 'minimum': 0, 'maximum': 300}},
+                  'required': ['height'], 'additionalProperties': False},
+                 self.set_height, output_schema=state, destructive=False),
+            Tool('demo.scene.reset', 'Reset the cube and read back the native scene.', empty,
+                 self.reset, output_schema=state, destructive=False),
+        ]
+        self.shared_owner = ToolSet('unreal_demo', declarations, dcc='unreal',
+                                    subscribe=self._subscribe_shared)
+        self.shared_binding = NativeToolBinding(self.client, self.shared_owner,
+                                               dispatch=self.dispatcher)
+        self.shared_binding.register()
+        self.record('shared.tools.registered', {'package': 'auroraview-dcc-mcp',
+                                               'version': installed,
+                                               'service_created': False,
+                                               'tools': [tool.name for tool in declarations]})
+
     def register(self):
-        for name, handler in [('demo.status', self.status),
-                              ('demo.python.multiply', self.multiply),
-                              ('demo.scene.set_height', self.set_height),
-                              ('demo.scene.reset', self.reset)]:
-            self.client.bind_call(name, handler)
+        if self.shared_api:
+            self._register_shared()
+        else:
+            for name, handler in [('demo.status', self.status),
+                                  ('demo.python.multiply', self.multiply),
+                                  ('demo.scene.set_height', self.set_height),
+                                  ('demo.scene.reset', self.reset)]:
+                self.client.bind_call(name, handler)
         for event, handler in [('demo:event.request', self.event_request),
                                ('demo:browser.ready', self.ready),
                                ('demo:browser.result', lambda data: self.record('browser.result', data))]:
-            self.unsubscribers.append(self.client.on(event, handler))
+            subscribe = self.shared_binding.subscribe if self.shared_binding else self.client.on
+            self.unsubscribers.append(subscribe(event, handler))
 
     def close(self):
+        errors = []
         for unsubscribe in self.unsubscribers:
-            unsubscribe()
+            try:
+                unsubscribe()
+            except Exception as error:
+                errors.append(error)
         self.unsubscribers.clear()
+        for resource in (self.shared_binding, self.shared_owner):
+            if resource:
+                try:
+                    resource.close()
+                except Exception as error:
+                    errors.append(error)
+        if errors:
+            raise RuntimeError('Demo tool cleanup: ' + '; '.join(str(error) for error in errors))

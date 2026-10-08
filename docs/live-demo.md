@@ -20,6 +20,8 @@ python scripts/run_demo.py --engine-root "C:\Program Files\Epic Games\UE_5.7" --
 
 Replace the engine path with your actual installation. Use a fresh output directory outside the repository and engine. Building and cooking can take several minutes. Keep the launcher terminal open: it owns the external Python tool provider and the process it launches.
 
+To use the public shared `Tool` / `ToolSet` declarations, explicitly install `uv pip install "./python[dcc-mcp]"` and add `--shared-tools` to either command. The launcher pumps tool calls and subscriptions on their owner thread. Closing a borrowed binding preserves its owner and other consumers. See [shared Python tools](python-tools.md#shared-tool-declarations) for dependencies and ownership requirements.
+
 The launcher builds the plugin, prepares the isolated sample project and starts the selected host. Game mode compiles and cooks the native sample; it does not run an HTML mock or rely on an installed Editor process. To stop, press Ctrl+C in the launcher terminal or close the owned host normally.
 
 ## Try the dashboard

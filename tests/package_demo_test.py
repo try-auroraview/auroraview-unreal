@@ -84,7 +84,7 @@ class OfflineBundleTests(unittest.TestCase):
         write(self.game / 'evidence/game-validation.json', json.dumps(self.receipt))
         for name in ['python/auroraview_unreal/__init__.py', 'Resources/live_demo.html', 'LICENSE']:
             write(self.source / name, 'synthetic source file')
-        for name in ['run_demo.py', 'demo_tools.py', 'build_plugin.py', 'validate_game.py',
+        for name in ['run_demo.py', 'demo_tools.py', 'owner_dispatch.py', 'build_plugin.py', 'validate_game.py',
                      'preflight_engine.py', 'pe_evidence.py']:
             write(self.source / 'scripts' / name, '# synthetic launcher input\n')
 

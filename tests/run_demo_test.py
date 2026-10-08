@@ -131,6 +131,40 @@ class DemoLaunchGuards(unittest.TestCase):
             with self.assertRaises(run_demo.RemoteError):
                 run_demo.dock_editor_view(client, timeout=0.5)
 
+    def test_browser_handshake_pumps_tools_on_the_registered_owner_thread(self):
+        dispatcher = run_demo.OwnerDispatcher()
+        tools = Mock(browser_ready=threading.Event())
+        process = Mock()
+        process.poll.return_value = None
+        owner, observed = threading.get_ident(), []
+        def incoming_call():
+            pending = dispatcher(lambda: observed.append(threading.get_ident()) or tools.browser_ready.set())
+            pending.result(timeout=2)
+        worker = threading.Thread(target=incoming_call)
+        worker.start()
+        try:
+            self.assertTrue(run_demo.wait_for_browser(tools, process, timeout=1, dispatcher=dispatcher))
+        finally:
+            worker.join(2)
+            dispatcher.close()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(observed, [owner])
+
+    def test_browser_wait_refuses_exited_host_and_bounded_missing_handshake(self):
+        tools = Mock(browser_ready=threading.Event())
+        process = Mock()
+        process.poll.return_value = 1
+        self.assertFalse(run_demo.wait_for_browser(tools, process, timeout=1))
+        process.poll.return_value = None
+        self.assertFalse(run_demo.wait_for_browser(tools, process, timeout=0))
+
+    def test_missing_shared_package_fails_before_starting_a_host(self):
+        with patch.object(run_demo.demo_tools, 'require_shared_tools', side_effect=ValueError('Pinned package missing')), \
+                patch.object(run_demo.subprocess, 'Popen') as spawn:
+            with self.assertRaisesRegex(ValueError, 'Pinned package missing'):
+                run_demo.launch({}, self.root / 'demo.html', self.root / 'Run', 0, shared_tools=True)
+        spawn.assert_not_called()
+
     def test_client_close_failure_still_waits_redacts_and_finalizes(self):
         output = self.root / 'Run'
         output.mkdir()

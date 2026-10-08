@@ -145,7 +145,7 @@ def package_demo(game_run, output):
         shutil.copytree(ROOT / directory, output / directory,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     (output / 'scripts').mkdir()
-    for name in ['run_demo.py', 'demo_tools.py', 'build_plugin.py', 'validate_game.py',
+    for name in ['run_demo.py', 'demo_tools.py', 'owner_dispatch.py', 'build_plugin.py', 'validate_game.py',
                  'preflight_engine.py', 'pe_evidence.py']:
         shutil.copy2(ROOT / 'scripts' / name, output / 'scripts' / name)
     shutil.copy2(ROOT / 'LICENSE', output / 'LICENSE')

@@ -55,6 +55,7 @@ public:
     bool OpenDocked(FName Id, const FString& TrustedHtmlFragment, const FText& Title, FString& OutError);
     // Move only this module's live tab into an already-open Editor root stack.
     // The browser/session survives the native move; no tab ownership escapes.
+    // Slate assigns a transient document UID while retaining our private type.
     bool DockInTabManager(FName Id, const TSharedRef<FTabManager>& TargetManager,
         FName PlaceholderId, FString& OutError);
 #if WITH_DEV_AUTOMATION_TESTS

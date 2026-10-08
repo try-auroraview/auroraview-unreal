@@ -32,6 +32,7 @@ struct FDockState
     int32 ReportsA = 0, ReportsB = 0;
     int32 Phase = 0;
     uint64 FirstGeneration = 0;
+    FString FirstLayoutId;
     double Deadline = 0;
 };
 class FWaitForDocked final : public IAutomationLatentCommand
@@ -59,6 +60,8 @@ public:
             Test->TestFalse(TEXT("Floating-only Hide never pretends to hide a dock"), Module.Hide(DockA));
             State->FirstGeneration = Module.GetGeneration(DockA);
             const auto NativeTab = FGlobalTabmanager::Get()->FindExistingLiveTab(FName(TEXT("AuroraView.View.DockAcceptanceA")));
+            if (!NativeTab.IsValid())
+            { Test->AddError(TEXT("Expected a live owned native tab")); Module.Remove(DockA); Module.Remove(DockB); return true; }
             const auto NativeState = Runtime.DescribeView(DockA);
             Test->TestEqual(TEXT("Describe identifies the actual native tab presentation"), NativeState->GetStringField(TEXT("presentation")), FString(TEXT("docked")));
             Test->TestTrue(TEXT("Describe reports the live tab and registration"), NativeState->GetBoolField(TEXT("tab_open")) && NativeState->GetBoolField(TEXT("dock_registered")));
@@ -81,7 +84,8 @@ public:
             Test->TestTrue(TEXT("Native dock move attaches the actual tab to the Editor root"), Attached->GetBoolField(TEXT("attached_to_root_window")));
             Test->TestTrue(TEXT("Native dock move retains browser readiness"), Attached->GetBoolField(TEXT("ready")));
             Test->TestEqual(TEXT("Native dock move preserves browser generation"), Module.GetGeneration(DockA), State->FirstGeneration);
-            Test->TestEqual(TEXT("Native docking preserves the registered tab identity"), NativeTab->GetLayoutIdentifier().TabType, FName(TEXT("AuroraView.View.DockAcceptanceA")));
+            Test->TestEqual(TEXT("Native docking preserves the registered private tab type"), NativeTab->GetLayoutIdentifier().TabType, FName(TEXT("AuroraView.View.DockAcceptanceA")));
+            State->FirstLayoutId = Attached->GetStringField(TEXT("tab_layout_id"));
             Test->TestEqual(TEXT("Native docking rebinds the CEF parent to the root window"), Attached->GetStringField(TEXT("browser_parent_window_native_handle")), Attached->GetStringField(TEXT("root_window_native_handle")));
             Test->TestTrue(TEXT("Idempotent open preserves actual root attachment"), OpenControlDock(Runtime, DockA).bOk && Runtime.DescribeView(DockA)->GetBoolField(TEXT("attached_to_root_window")));
             Module.Close(DockA);
@@ -103,6 +107,18 @@ public:
         }
         if (State->ReportsA != 2) return false;
         Test->TestTrue(TEXT("Same-ID reopen uses a fresh generation"), Module.GetGeneration(DockA) > State->FirstGeneration);
+        const uint64 ReopenedGeneration = Module.GetGeneration(DockA);
+        const auto TargetManager = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorTabManager();
+        const auto Destination = TargetManager.IsValid() ? TargetManager->FindExistingLiveTab(FName(TEXT("LevelEditorSelectionDetails"))) : TSharedPtr<SDockTab>();
+        FString DockError;
+        Test->TestTrue(TEXT("Same-ID reopened browser can attach to its native Editor stack again"),
+            TargetManager.IsValid() && Runtime.DockInTabManager(DockA, TargetManager.ToSharedRef(), FName(TEXT("LevelEditorSelectionDetails")), DockError));
+        const auto Reattached = Runtime.DescribeView(DockA);
+        Test->TestTrue(TEXT("Reopened browser is actually attached to the Editor root"), Reattached->GetBoolField(TEXT("attached_to_root_window")));
+        Test->TestEqual(TEXT("Reattaching does not restart the reopened browser"), Module.GetGeneration(DockA), ReopenedGeneration);
+        Test->TestTrue(TEXT("Slate assigns a new transient document instance on reopened attachment"), Reattached->GetStringField(TEXT("tab_layout_id")) != State->FirstLayoutId);
+        Test->TestTrue(TEXT("Attachment preserves the existing native destination tab"), Destination.IsValid()
+            && TargetManager->FindExistingLiveTab(FName(TEXT("LevelEditorSelectionDetails"))) == Destination);
         Test->TestEqual(TEXT("B did not reload during A close/reopen"), State->ReportsB, 1);
         Test->TestTrue(TEXT("Remove A succeeds"), Module.Remove(DockA));
         Test->TestTrue(TEXT("Remove B succeeds"), Module.Remove(DockB));

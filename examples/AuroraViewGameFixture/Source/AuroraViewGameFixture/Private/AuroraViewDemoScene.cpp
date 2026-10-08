@@ -1,4 +1,5 @@
 #include "AuroraViewDemoScene.h"
+#include "AuroraViewRuntimeModule.h"
 
 #include "Camera/CameraComponent.h"
 #include "Components/DirectionalLightComponent.h"
@@ -11,6 +12,8 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Modules/ModuleManager.h"
+#include "Serialization/JsonSerializer.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -184,6 +187,15 @@ FAuroraViewDemoState AAuroraViewDemoScene::GetDemoState() const
     }
     State.Revision = Revision;
     return State;
+}
+
+FString AAuroraViewDemoScene::GetAuroraViewState() const
+{
+    const auto Module = FModuleManager::GetModulePtr<FAuroraViewRuntimeModule>(TEXT("AuroraViewRuntime"));
+    if (!Module) return TEXT("{\"exists\":false,\"ready\":false,\"reason\":\"runtime_not_loaded\"}");
+    FString Result;
+    FJsonSerializer::Serialize(Module->DescribeView(TEXT("LiveDemo")), TJsonWriterFactory<>::Create(&Result));
+    return Result;
 }
 
 void AAuroraViewDemoScene::UpdateStatusText()

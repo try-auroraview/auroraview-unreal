@@ -49,6 +49,10 @@ public:
     UFUNCTION(BlueprintPure, Category = "AuroraView Demo")
     FAuroraViewDemoState GetDemoState() const;
 
+    /** Read native Slate/browser state directly on the host thread. No IPC call. */
+    UFUNCTION(BlueprintPure, Category = "AuroraView Demo")
+    FString GetAuroraViewState() const;
+
     virtual void OnConstruction(const FTransform& Transform) override;
 
     static FVector DemoCameraLocation();

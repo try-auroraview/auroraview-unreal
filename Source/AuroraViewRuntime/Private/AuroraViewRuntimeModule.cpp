@@ -72,22 +72,16 @@ FString MakeDocument(const FString& Stub, const FString& Bootstrap, const FStrin
 TMap<FName, uint64> DockOwners;
 uint64 NextDockOwner = 0;
 
-class FStableDockTarget final : public FTabManager::FSearchPreference
+class FExistingDockTarget final : public FTabManager::FSearchPreference
 {
 public:
-    FStableDockTarget(const TSharedRef<SDockTab>& InTarget, const FTabId& InIdentity)
-        : Target(InTarget), Identity(InIdentity) {}
-    TSharedPtr<SDockTab> Search(const FTabManager&, FName, const TSharedRef<SDockTab>& Tab) const override
+    explicit FExistingDockTarget(const TSharedRef<SDockTab>& InTarget) : Target(InTarget) {}
+    TSharedPtr<SDockTab> Search(const FTabManager&, FName, const TSharedRef<SDockTab>&) const override
     {
-        // InsertNewDocumentTab assigns a temporary document ID before Search.
-        // Restore our registered identity before Slate creates persistent stack
-        // metadata. UE4 has no separate NewTabId overload of the insertion API.
-        Tab->SetLayoutIdentifier(Identity);
         return Target;
     }
 private:
     TSharedRef<SDockTab> Target;
-    FTabId Identity;
 };
 
 struct FSession final : TSharedFromThis<FSession>
@@ -854,8 +848,7 @@ bool FAuroraViewRuntimeModule::DockInTabManager(FName Id, const TSharedRef<FTabM
     const auto Current = [this, Id, Session, Tab, Epoch, Request]()
     { return Impl && Impl->IsCurrent(Id, Session) && !Session->bDisposing && Session->DockTab.Pin() == Tab
         && Session->Mailbox->IsCurrent(Epoch) && Session->DockRequest == Request; };
-    const FTabId Identity = Tab->GetLayoutIdentifier();
-    const FStableDockTarget Search(Target.ToSharedRef(), Identity);
+    const FExistingDockTarget Search(Target.ToSharedRef());
     ++Session->DockInvocationDepth;
     ON_SCOPE_EXIT { Session->EndDockInvocation(); };
     // UE RemoveTabFromParent fires OnTabClosed even during a deliberate move.
@@ -863,11 +856,15 @@ bool FAuroraViewRuntimeModule::DockInTabManager(FName Id, const TSharedRef<FTabM
     Tab->SetOnTabClosed(SDockTab::FOnTabClosedCallback());
     Tab->RemoveTabFromParent();
     if (!Current()) { OutError = TEXT("Dock move interrupted while leaving its old stack"); return false; }
-    TargetManager->InsertNewDocumentTab(PlaceholderId, Search, Tab.ToSharedRef());
+    // The insertion API assigns its first argument as the new tab type on UE4.
+    // Use our own private type; Search selects the already-validated destination
+    // stack independently. Slate owns the transient document instance ID, so
+    // this explicit attachment does not overwrite the user's persisted layout.
+    TargetManager->InsertNewDocumentTab(Session->DockId, Search, Tab.ToSharedRef());
     if (!Current()) { OutError = TEXT("Dock move interrupted by a retired presentation"); return false; }
     Session->OwnDockTab(Tab.ToSharedRef());
     Session->UpdateBrowserParent();
-    if (!Current() || Tab->GetParentWindow() != Root || !(Tab->GetLayoutIdentifier() == Identity))
+    if (!Current() || Tab->GetParentWindow() != Root || Tab->GetLayoutIdentifier().TabType != Session->DockId)
     {
         OutError = TEXT("Slate did not attach the native view to the requested Editor root stack");
         return false;
@@ -919,6 +916,7 @@ TSharedRef<FJsonObject> FAuroraViewRuntimeModule::DescribeView(FName Id) const
         ? TEXT("floating") : (Session.IsValid() && Session->bDockRegistered ? TEXT("docked") : TEXT("none"))));
     State->SetBoolField(TEXT("dock_registered"), Session.IsValid() && Session->bDockRegistered);
     State->SetStringField(TEXT("tab_id"), Session.IsValid() && Session->bDockRegistered ? Session->DockId.ToString() : FString());
+    State->SetStringField(TEXT("tab_layout_id"), Tab.IsValid() ? Tab->GetLayoutIdentifier().ToString() : FString());
     State->SetBoolField(TEXT("tab_open"), Tab.IsValid());
     State->SetBoolField(TEXT("tab_active"), Tab.IsValid() && Tab->IsActive());
     State->SetBoolField(TEXT("tab_foreground"), Tab.IsValid() && Tab->IsForeground());

@@ -355,6 +355,78 @@ class DemoLaunchGuards(unittest.TestCase):
         process.poll.return_value = None
         self.assertFalse(run_demo.wait_for_browser(tools, process, timeout=0))
 
+    def test_shared_ready_loop_waits_on_enqueue_signal_with_remaining_stop_budget(self):
+        process, dispatcher = Mock(), Mock()
+        process.poll.return_value = None
+        clock, waits = [100.0], []
+        def wait(timeout):
+            waits.append(timeout)
+            clock[0] += timeout
+        dispatcher.wait_for_work.side_effect = wait
+        with patch.object(run_demo.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(run_demo.time, 'sleep', side_effect=AssertionError('Shared work must use its wake signal')):
+            run_demo.run_ready_loop(process, self.root, 0.25, dispatcher)
+        self.assertEqual(dispatcher.pump.call_count, 2)
+        self.assertEqual(dispatcher.pump.call_args_list[0].args, ())
+        self.assertAlmostEqual(waits[0], 0.2)
+        self.assertAlmostEqual(waits[1], 0.05)
+        self.assertTrue(all(0 < timeout <= 0.2 for timeout in waits))
+        self.assertAlmostEqual(clock[0], 100.25)
+
+    def test_shared_ready_loop_never_waits_after_handler_reaches_stop_deadline(self):
+        process, dispatcher = Mock(), Mock()
+        process.poll.return_value = None
+        clock = [100.0]
+        dispatcher.pump.side_effect = lambda: clock.__setitem__(0, 101.0)
+        with patch.object(run_demo.time, 'monotonic', side_effect=lambda: clock[0]):
+            run_demo.run_ready_loop(process, self.root, 1, dispatcher)
+        dispatcher.pump.assert_called_once_with()
+        dispatcher.wait_for_work.assert_not_called()
+
+    def test_ready_loop_stop_file_and_exited_process_never_pump_or_wait(self):
+        dispatcher, process = Mock(), Mock()
+        process.poll.return_value = None
+        (self.root / 'stop.request').touch()
+        with patch.object(run_demo.time, 'sleep') as sleep:
+            run_demo.run_ready_loop(process, self.root, 0, dispatcher)
+            (self.root / 'stop.request').unlink()
+            process.poll.return_value = 0
+            run_demo.run_ready_loop(process, self.root, 0, dispatcher)
+        dispatcher.pump.assert_not_called()
+        dispatcher.wait_for_work.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_shared_ready_loop_flood_preserves_pump_limit_and_owner_cleanup(self):
+        dispatcher = run_demo.OwnerDispatcher(capacity=36)
+        process = Mock()
+        process.poll.return_value = None
+        owner, observed, pending = threading.get_ident(), [], []
+        def handler():
+            observed.append(threading.get_ident())
+            if len(observed) == 32:
+                (self.root / 'stop.request').touch()
+        def incoming():
+            pending.extend(dispatcher(handler) for _ in range(36))
+        worker = threading.Thread(target=incoming)
+        worker.start()
+        worker.join(2)
+        self.assertFalse(worker.is_alive())
+        try:
+            with patch.object(run_demo.time, 'sleep', side_effect=AssertionError('No polling sleep')):
+                run_demo.run_ready_loop(process, self.root, 0, dispatcher)
+            self.assertEqual(observed, [owner] * 32)
+        finally:
+            dispatcher.close()
+        self.assertTrue(all(future.cancelled() for future in pending[32:]))
+        self.assertEqual(dispatcher.pump(), 0)
+
+    def test_nonshared_ready_loop_retains_bounded_sleep(self):
+        process = Mock()
+        process.poll.side_effect = [None, 0]
+        with patch.object(run_demo.time, 'sleep') as sleep:
+            run_demo.run_ready_loop(process, self.root, 0)
+        sleep.assert_called_once_with(0.2)
+
     def test_missing_shared_package_fails_before_starting_a_host(self):
         with patch.object(run_demo.demo_tools, 'require_shared_tools', side_effect=ValueError('Pinned package missing')), \
                 patch.object(run_demo.subprocess, 'Popen') as spawn:

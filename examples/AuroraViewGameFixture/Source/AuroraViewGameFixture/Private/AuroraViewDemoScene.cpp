@@ -16,10 +16,39 @@
 #include "Serialization/JsonSerializer.h"
 #include "UObject/ConstructorHelpers.h"
 
+#if WITH_EDITOR
+#include "Editor.h"
+#include "LevelEditorViewport.h"
+#include "Runtime/Launch/Resources/Version.h"
+#endif
+
 namespace
 {
     const float CubeRestHeight = 80.0f;
     const FVector CubeRestLocation(-170.0f, 0.0f, CubeRestHeight);
+
+#if WITH_EDITOR
+    void RequestEditorSceneRedraw(UWorld* World)
+    {
+        if (!GEditor || IsRunningCommandlet() || !World || World->WorldType != EWorldType::Editor)
+        {
+            return;
+        }
+#if ENGINE_MAJOR_VERSION == 4 && ENGINE_MINOR_VERSION < 26
+        for (FLevelEditorViewportClient* Viewport : GEditor->LevelViewportClients)
+#else
+        for (FLevelEditorViewportClient* Viewport : GEditor->GetLevelViewportClients())
+#endif
+        {
+            if (Viewport && Viewport->GetWorld() == World)
+            {
+                // Request the next normal draw, including moved-geometry hit proxies.
+                // Realtime overrides, focus and Slate throttling remain engine-owned.
+                Viewport->Invalidate(false, true);
+            }
+        }
+    }
+#endif
 
     void SetMeshColor(UStaticMeshComponent* Mesh, UMaterialInterface* Material,
         const FLinearColor& Color)
@@ -168,6 +197,9 @@ bool AAuroraViewDemoScene::SetCubeHeight(float Height)
     CubeA->SetRelativeLocation(CubeRestLocation + FVector(0.0f, 0.0f, Height));
     Revision = Revision == MAX_int32 ? 1 : Revision + 1;
     UpdateStatusText();
+#if WITH_EDITOR
+    RequestEditorSceneRedraw(GetWorld());
+#endif
     return true;
 }
 

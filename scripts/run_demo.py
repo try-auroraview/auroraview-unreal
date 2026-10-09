@@ -337,6 +337,22 @@ def wait_for_browser(tools, process, timeout=45, dispatcher=None):
     return True
 
 
+def run_ready_loop(process, session_dir, session_seconds, dispatcher=None):
+    """Keep the owned host alive; queued shared tools wake its existing owner."""
+    started = time.monotonic()
+    while process.poll() is None:
+        if (session_dir / 'stop.request').exists() or (session_seconds and time.monotonic() - started >= session_seconds):
+            break
+        if dispatcher:
+            dispatcher.pump()
+            remaining = max(0, session_seconds - (time.monotonic() - started)) if session_seconds else 0.2
+            if remaining == 0:
+                break
+            dispatcher.wait_for_work(min(0.2, remaining))
+        else:
+            time.sleep(0.2)
+
+
 def launch(prepared, html, output, session_seconds, shared_tools=False, startup_timeout=900):
     validate_startup_timeout(startup_timeout)
     if shared_tools:
@@ -451,13 +467,7 @@ def launch(prepared, html, output, session_seconds, shared_tools=False, startup_
         print('Demo ready: Unreal ' + prepared['engine_version'] + ' ' + mode + ', PID ' + str(process.pid), flush=True)
         print('Use the dashboard: Lift cube / Reset scene / Python call / Python invoke / Send event.', flush=True)
         print('Close the host or press Ctrl+C here to stop. Session evidence: ' + str(receipt_path), flush=True)
-        started = time.monotonic()
-        while process.poll() is None:
-            if (session_dir / 'stop.request').exists() or (session_seconds and time.monotonic() - started >= session_seconds):
-                break
-            if dispatcher:
-                dispatcher.pump()
-            time.sleep(0.2)
+        run_ready_loop(process, session_dir, session_seconds, dispatcher)
     except KeyboardInterrupt:
         with lock:
             result['interrupted'] = True

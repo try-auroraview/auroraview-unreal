@@ -63,3 +63,4 @@ jobs:
           python tests/native_tools_test.py
           python tests/owner_dispatch_test.py
           python tests/shared_demo_tools_test.py
+          python tests/shared_tool_validation_test.py

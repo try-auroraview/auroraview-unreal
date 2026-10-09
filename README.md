@@ -24,6 +24,8 @@ The Runtime module owns WebBrowser/CEF views, the unchanged AuroraView Core `cal
 
 External Python scripts can register tools, receive browser calls, call native Unreal tools and exchange events in both Editor and games. No embedded Python dependency is needed. Where the engine provides and enables PythonScriptPlugin, Editor additionally offers `unreal.python.execute`. UE 4.18 and packaged games use external Python and native/project tools.
 
+For a repeatable tool check, install `./python[dcc-mcp]` and add `--shared-tools --validate-tools --validation-timeout 30` to the demo command. The launcher borrows the existing public ToolSession, checks the native scene state before and after a reversible change, verifies socket calls and event callbacks, and saves `tool-validation.json` in the session directory. Run it separately with `--mode editor` and `--mode game`; each receipt identifies its actual host and source. Tool validation does not certify rendered UI or Shipping runtime behavior.
+
 ```python
 from auroraview_unreal import Client
 

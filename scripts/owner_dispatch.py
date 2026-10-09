@@ -4,6 +4,7 @@ The caller pumps the queue in its existing main loop. This module creates no
 thread, event loop or host service.
 """
 from concurrent.futures import Future
+import math
 import queue
 import threading
 
@@ -16,6 +17,7 @@ class OwnerDispatcher:
         self._queue = queue.Queue(maxsize=capacity)
         self._lock = threading.Lock()
         self._closed = False
+        self._wake = threading.Event()
 
     def _check_owner(self):
         if threading.get_ident() != self._owner:
@@ -34,6 +36,7 @@ class OwnerDispatcher:
             else:
                 try:
                     self._queue.put_nowait((future, function))
+                    self._wake.set()
                 except queue.Full:
                     future.set_exception(RuntimeError('The demo dispatch queue is full'))
                 return future
@@ -66,10 +69,31 @@ class OwnerDispatcher:
             count += 1
         return count
 
+    def wait_for_work(self, timeout=0.2):
+        """Wait on the owner without executing callbacks; zero polls once.
+
+        A finite platform-supported timeout bounds the wait. The caller retains
+        its stop deadline, then pumps the existing bounded queue on this thread.
+        """
+        self._check_owner()
+        if (type(timeout) not in (int, float) or not 0 <= timeout <= threading.TIMEOUT_MAX
+                or not math.isfinite(timeout)):
+            raise ValueError('Wait timeout must be finite, nonnegative and platform-supported')
+        with self._lock:
+            if self._closed:
+                return False
+            # Clear before testing the queue under the enqueue lock. A worker
+            # arriving after this check sets the event, even before wait starts.
+            self._wake.clear()
+            if not self._queue.empty():
+                return True
+        return self._wake.wait(timeout)
+
     def close(self):
         self._check_owner()
         with self._lock:
             self._closed = True
+            self._wake.set()
             while True:
                 try:
                     future, _function = self._queue.get_nowait()

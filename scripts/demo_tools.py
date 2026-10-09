@@ -50,6 +50,19 @@ def find_scene(client, context):
     return matches[0] if matches else None
 
 
+class RegistrationCalls:
+    """Forward only shared registration and events through the existing client."""
+
+    def __init__(self, client, timeout):
+        self.client, self.timeout = client, timeout
+
+    def bind_tool(self, descriptor, handler):
+        return self.client.bind_tool(descriptor, handler, timeout=self.timeout)
+
+    def emit(self, event, data=None):
+        self.client.emit(event, data)
+
+
 class DemoTools:
     """Own the external tools; native objects remain owned by the sample project."""
 
@@ -138,7 +151,7 @@ class DemoTools:
             pending.add_done_callback(completed)
         return self.client.on(event, deliver)
 
-    def _register_shared(self):
+    def _register_shared(self, registration_timeout=None):
         Tool, ToolSet, NativeToolBinding, installed = self.shared_api
         empty = {'type': 'object', 'properties': {}, 'additionalProperties': False}
         number = {'type': 'number', 'minimum': -1000000, 'maximum': 1000000}
@@ -166,7 +179,8 @@ class DemoTools:
         ]
         self.shared_owner = ToolSet('unreal_demo', declarations, dcc='unreal',
                                     subscribe=self._subscribe_shared)
-        self.shared_binding = NativeToolBinding(self.client, self.shared_owner,
+        client = self.client if registration_timeout is None else RegistrationCalls(self.client, registration_timeout)
+        self.shared_binding = NativeToolBinding(client, self.shared_owner,
                                                dispatch=self.dispatcher)
         self.shared_binding.register()
         self.record('shared.tools.registered', {'package': 'auroraview-dcc-mcp',
@@ -174,15 +188,19 @@ class DemoTools:
                                                'service_created': False,
                                                'tools': [tool.name for tool in declarations]})
 
-    def register(self):
+    def register(self, *, registration_timeout=None):
+        """Register tools, optionally resolving an RPC timeout before each bind."""
         if self.shared_api:
-            self._register_shared()
+            self._register_shared(registration_timeout)
         else:
             for name, handler in [('demo.status', self.status),
                                   ('demo.python.multiply', self.multiply),
                                   ('demo.scene.set_height', self.set_height),
                                   ('demo.scene.reset', self.reset)]:
-                self.client.bind_call(name, handler)
+                if registration_timeout is None:
+                    self.client.bind_call(name, handler)
+                else:
+                    self.client.bind_call(name, handler, timeout=registration_timeout)
         for event, handler in [('demo:event.request', self.event_request),
                                ('demo:browser.ready', self.ready),
                                ('demo:browser.result', lambda data: self.record('browser.result', data))]:

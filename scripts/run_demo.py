@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -36,6 +37,84 @@ def save(path, data):
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     temporary.replace(path)
+
+
+def validate_startup_timeout(seconds):
+    if type(seconds) is not int or not 30 <= seconds <= 3600:
+        raise build_plugin.BuildError('Use startup-timeout between 30 and 3600 seconds')
+
+
+class StartupDeadline:
+    """One readiness budget; build time, ready lifetime and teardown are separate."""
+
+    def __init__(self, seconds, receipt):
+        validate_startup_timeout(seconds)
+        self.started = time.monotonic()
+        self.deadline = self.started + seconds
+        self.receipt = receipt
+        receipt.update(timeout_seconds=seconds, phase='endpoint', elapsed_seconds=0)
+
+    def remaining(self, phase=None, maximum=None):
+        if phase is not None:
+            self.receipt['phase'] = phase
+        current = time.monotonic()
+        self.receipt['elapsed_seconds'] = max(0, current - self.started)
+        remaining = self.deadline - current
+        if remaining <= 0:
+            raise build_plugin.BuildError('Demo startup timeout during ' + self.receipt['phase'])
+        return min(remaining, maximum) if maximum is not None else remaining
+
+    def call(self, client, method, *args, **kwargs):
+        kwargs['timeout'] = self.remaining(maximum=min(kwargs.get('timeout', 5), 5))
+        result = client.call(method, *args, **kwargs)
+        self.remaining()
+        return result
+
+
+class StartupCalls:
+    """Call-only adapter for native readiness queries; owns no transport."""
+
+    def __init__(self, client, deadline):
+        self.client, self.deadline = client, deadline
+
+    def call(self, method, *args, **kwargs):
+        return self.deadline.call(self.client, method, *args, **kwargs)
+
+
+def editor_runtime_cache(prepared, output):
+    """Reuse only this output's ordinary private cache, never a caller-supplied path."""
+    output = Path(output)
+    cache = output / 'RuntimeDerivedDataCache'
+    for path in (cache, *cache.parents):
+        if path.exists() or path.is_symlink():
+            attributes = path.lstat()
+            if (path.is_symlink() or getattr(attributes, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                    or not path.is_dir()):
+                raise build_plugin.BuildError('Runtime cache requires ordinary directory ancestors')
+    protected = [ROOT]
+    protected += [Path(prepared[name]) for name in ('engine_root', 'package') if prepared.get(name)]
+    for path in protected:
+        if build_plugin.inside(cache.resolve(), path.resolve()) or build_plugin.inside(path.resolve(), cache.resolve()):
+            raise build_plugin.BuildError('Runtime cache overlaps a protected input')
+    if any(character in str(cache) for character in ['"', '%', '\r', '\n', '\0']):
+        raise build_plugin.BuildError('Runtime cache path is not safe for the private INI graph')
+    if prepared['engine_version'].startswith('4.') and len(str(cache.resolve())) > 119:
+        raise build_plugin.BuildError('UE4 cache paths are limited to 119 characters; use a shorter output directory')
+    if prepared.get('derived_data_cache', {}).get('graph') != validate_game.DDC_GRAPH:
+        raise build_plugin.BuildError('Prepared Editor has no verified private cache graph')
+    cache.mkdir(exist_ok=True)
+    probe = cache / ('.write-probe-' + secrets.token_hex(8))
+    created = False
+    try:
+        with probe.open('xb') as stream:
+            created = True
+            stream.write(b'AuroraView runtime cache')
+        if probe.read_bytes() != b'AuroraView runtime cache':
+            raise build_plugin.BuildError('Runtime cache readback failed')
+    finally:
+        if created:
+            probe.unlink()
+    return cache.resolve()
 
 
 def isolated_output(output, protected, reuse=False):
@@ -188,7 +267,7 @@ def bundle_inputs(bundle):
                 source=manifest.get('source'), bundle_manifest_sha256=build_plugin.sha256(bundle / 'demo-package.json')), html
 
 
-def editor_session_project(prepared, session_dir):
+def editor_session_project(prepared, session_dir, runtime_cache=None):
     """Keep verified build inputs immutable when Editor writes project config."""
     source_root = Path(prepared['uproject']).resolve().parent.parent
     destination = session_dir / 'Project'
@@ -215,7 +294,23 @@ def editor_session_project(prepared, session_dir):
     if project.relative_to(session_dir).as_posix() not in copied:
         raise build_plugin.BuildError('Prepared Editor has no recorded project descriptor')
     (destination / 'Content').mkdir(exist_ok=True)
-    save(session_dir / 'editor-inputs.json', dict(products_sha256=copied))
+    inputs = dict(products_sha256=copied)
+    if runtime_cache is not None:
+        runtime_cache = Path(runtime_cache)
+        if runtime_cache != (session_dir.parent / 'RuntimeDerivedDataCache').resolve():
+            raise build_plugin.BuildError('Runtime cache must belong to this prepared output')
+        config = destination / 'Config/DefaultEngine.ini'
+        before = config.read_bytes()
+        portable = ('Path="%GAMEDIR%' + validate_game.DDC_DIRECTORY + '"').encode('utf-8')
+        if before.count(portable) != 1 or 'Project/Config/DefaultEngine.ini' not in copied:
+            raise build_plugin.BuildError('Prepared Editor must contain one verified portable private cache path')
+        # Change only the verified session copy. The build's Config and products
+        # remain byte-identical and the override has its own provenance below.
+        config.write_bytes(before.replace(portable, ('Path="' + runtime_cache.as_posix() + '"').encode('utf-8')))
+        inputs['runtime_overrides'] = {'Project/Config/DefaultEngine.ini': dict(
+            input_sha256=copied['Project/Config/DefaultEngine.ini'], sha256=build_plugin.sha256(config),
+            graph=validate_game.DDC_GRAPH, cache_directory=str(runtime_cache))}
+    save(session_dir / 'editor-inputs.json', inputs)
     return project
 
 
@@ -242,7 +337,8 @@ def wait_for_browser(tools, process, timeout=45, dispatcher=None):
     return True
 
 
-def launch(prepared, html, output, session_seconds, shared_tools=False):
+def launch(prepared, html, output, session_seconds, shared_tools=False, startup_timeout=900):
+    validate_startup_timeout(startup_timeout)
     if shared_tools:
         demo_tools.require_shared_tools()
     session_dir = output / ('Session-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + secrets.token_hex(3))
@@ -253,7 +349,8 @@ def launch(prepared, html, output, session_seconds, shared_tools=False):
         reservation.bind(('127.0.0.1', 0))
         port = reservation.getsockname()[1]
     mode, executable = prepared['mode'], Path(prepared['executable'])
-    uproject = editor_session_project(prepared, session_dir) if mode == 'editor' else None
+    runtime_cache = editor_runtime_cache(prepared, output) if mode == 'editor' else None
+    uproject = editor_session_project(prepared, session_dir, runtime_cache) if mode == 'editor' else None
     command = [str(executable)]
     if mode == 'editor':
         command += [str(uproject), '/Engine/Maps/Entry']
@@ -266,14 +363,16 @@ def launch(prepared, html, output, session_seconds, shared_tools=False):
     result = dict(status='starting', mode=mode, started_utc=now(), source=prepared.get('source'),
                   engine_version=prepared['engine_version'], pid=None, port=port,
                   arguments=[arg.replace(token, '<redacted>') for arg in command[1:]],
-                  browser_ready=False, events=[], exit_code=None, forced_cleanup=False)
+                  browser_ready=False, events=[], exit_code=None, forced_cleanup=False,
+                  startup=dict(timeout_seconds=startup_timeout, phase='not_started', elapsed_seconds=0))
     if uproject:
         result['uproject'] = str(uproject)
         if prepared.get('derived_data_cache', {}).get('graph') == validate_game.DDC_GRAPH:
             result['derived_data_cache'] = dict(
                 graph=validate_game.DDC_GRAPH,
-                expected_directory=str(uproject.parent / validate_game.DDC_DIRECTORY),
-                writable_probe='not_run', native_usage='not_verified')
+                expected_directory=str(runtime_cache), writable_probe='pass', native_usage='not_verified',
+                shared_cache=False, zen=False, zen_store=False,
+                runtime_overrides=build_plugin.read_json(session_dir / 'editor-inputs.json')['runtime_overrides'])
     lock = threading.Lock()
 
     def record(kind, data):
@@ -291,52 +390,60 @@ def launch(prepared, html, output, session_seconds, shared_tools=False):
             process = subprocess.Popen(command, cwd=executable.parent, stdout=stream, stderr=subprocess.STDOUT)
         result['pid'] = process.pid
         save(receipt_path, result)
-        deadline = time.monotonic() + 180
+        startup = StartupDeadline(startup_timeout, result['startup'])
+        save(receipt_path, result)
         while client is None:
+            remaining = startup.remaining('endpoint', maximum=5)
             if process.poll() is not None:
                 raise build_plugin.BuildError('Demo host exited before native communication became ready')
             try:
                 client = Client(port, token, expected_pid=process.pid, expected_context=mode,
-                                expected_engine=prepared['engine_version'] + '.', timeout=5)
+                                expected_engine=prepared['engine_version'] + '.', timeout=remaining)
             except (OSError, TimeoutError):
-                if time.monotonic() > deadline:
-                    raise build_plugin.BuildError('Demo host did not start its authenticated control endpoint')
-                time.sleep(0.2)
+                time.sleep(min(0.2, startup.remaining()))
+        # A last-moment hello must not shorten this client's ready/cleanup RPCs.
+        # Startup queries continue to pass their own remaining timeout below.
+        client.timeout = 5.0
+        startup.remaining('scene')
+        save(receipt_path, result)
+        bounded_client = StartupCalls(client, startup)
         result['identity'] = client.identity
         scene = None
         command_sent = False
         while scene is None:
-            info = client.call('unreal.engine.info')
+            info = bounded_client.call('unreal.engine.info')
             if info.get('engine_ready'):
                 if mode == 'editor' and not command_sent:
-                    worlds = [world for world in client.call('unreal.world.list') if world.get('world_type') == 2]
+                    worlds = [world for world in bounded_client.call('unreal.world.list') if world.get('world_type') == 2]
                     if len(worlds) == 1:
-                        client.call('unreal.console.execute', {'world': worlds[0]['object'], 'command': 'AuroraView.Demo.Scene'})
+                        bounded_client.call('unreal.console.execute', {'world': worlds[0]['object'], 'command': 'AuroraView.Demo.Scene'})
                         command_sent = True
-                scene = demo_tools.find_scene(client, mode)
+                scene = demo_tools.find_scene(bounded_client, mode)
             if scene is None:
-                if time.monotonic() > deadline:
-                    raise build_plugin.BuildError('The owned demo scene did not become available')
-                time.sleep(0.2)
+                time.sleep(min(0.2, startup.remaining()))
         result['world'], result['scene_object'] = scene
         if shared_tools:
             tools = demo_tools.DemoTools(client, scene[1], record,
                                          shared_tools=True, dispatcher=dispatcher)
         else:
             tools = demo_tools.DemoTools(client, scene[1], record)
-        tools.register()
-        client.call('auroraview.view.open', {
+        startup.remaining('tools')
+        tools.register(registration_timeout=lambda: startup.remaining(maximum=5))
+        startup.remaining()
+        startup.remaining('view')
+        bounded_client.call('auroraview.view.open', {
             'id': 'LiveDemo', 'title': 'AuroraView / Unreal ' + prepared['engine_version'] + ' / ' + mode.title(),
             'presentation': 'docked' if mode == 'editor' else 'floating',
             'html': html.read_text(encoding='utf-8')})
         if mode == 'editor':
-            dock_editor_view(client)
-        if not wait_for_browser(tools, process, dispatcher=dispatcher):
+            dock_editor_view(bounded_client, timeout=startup.remaining('dock', maximum=30))
+        if not wait_for_browser(tools, process, timeout=startup.remaining('browser', maximum=45), dispatcher=dispatcher):
             raise build_plugin.BuildError('The real CEF dashboard did not finish its Core/Python handshake')
-        presentation = client.call('auroraview.view.describe', {'id': 'LiveDemo'})
+        presentation = bounded_client.call('auroraview.view.describe', {'id': 'LiveDemo'})
         if not presentation.get('ready') or (mode == 'editor' and (
                 presentation.get('presentation') != 'docked' or not presentation.get('attached_to_root_window'))):
             raise build_plugin.BuildError('The native host did not confirm the requested view presentation')
+        startup.remaining('ready')
         with lock:
             result['presentation'] = presentation
             result['status'] = 'running'
@@ -427,6 +534,8 @@ def main():
     parser.add_argument('--shared-tools', action='store_true',
                         help='Use the explicitly installed public auroraview-dcc-mcp 0.1.0 tool contracts')
     parser.add_argument('--timeout', type=int, default=2400)
+    parser.add_argument('--startup-timeout', type=int, default=900,
+                        help='Native endpoint/scene/view readiness budget, 30..3600 seconds; separate from build timeout')
     parser.add_argument('--session-seconds', type=int, default=0, help='Gracefully stop after N ready seconds; 0 keeps running')
     options = parser.parse_args()
     try:
@@ -434,6 +543,7 @@ def main():
             raise build_plugin.BuildError('The public native demo currently supports Win64 only')
         if options.timeout < 30 or options.session_seconds < 0:
             raise build_plugin.BuildError('Use timeout >=30 and session-seconds >=0')
+        validate_startup_timeout(options.startup_timeout)
         protected = [ROOT]
         if options.bundle:
             if options.engine_root or options.package or options.reuse or options.mode != 'game':
@@ -461,7 +571,7 @@ def main():
         if options.prepare_only:
             print('Demo prepared: ' + str(output), flush=True)
             return 0
-        result = launch(prepared, html, output, options.session_seconds, options.shared_tools)
+        result = launch(prepared, html, output, options.session_seconds, options.shared_tools, options.startup_timeout)
         return 0 if result['status'] == 'closed' else 1
     except (OSError, ValueError, build_plugin.BuildError) as error:
         print('Demo failed: ' + str(error), file=sys.stderr)

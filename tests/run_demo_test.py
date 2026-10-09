@@ -110,6 +110,203 @@ class DemoLaunchGuards(unittest.TestCase):
         with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'Unsafe prepared'):
             run_demo.editor_session_project(prepared, second)
 
+    def cache_inputs(self):
+        prepared = self.editor_inputs()
+        prepared.update(engine_version='5.7', derived_data_cache={'graph': run_demo.validate_game.DDC_GRAPH})
+        config = Path(prepared['uproject']).parent / 'Config/DefaultEngine.ini'
+        config.write_text(config.read_text() + '\n[AuroraViewValidationDDC]\n'
+                          'Local=(Type=FileSystem,ReadOnly=false,Clean=false,Flush=false,DeleteUnused=false,'
+                          'Path="%GAMEDIR%DerivedDataCache",DeleteOnly=false)\n', encoding='utf-8')
+        prepared['products_sha256']['Project/Config/DefaultEngine.ini'] = run_demo.build_plugin.sha256(config)
+        return prepared
+
+    def test_runtime_cache_survives_unique_sessions_without_changing_verified_products(self):
+        prepared = self.cache_inputs()
+        output = Path(prepared['uproject']).parent.parent
+        config = Path(prepared['uproject']).parent / 'Config/DefaultEngine.ini'
+        original = config.read_bytes()
+        cache = run_demo.editor_runtime_cache(prepared, output)
+        (cache / 'owned-shader.udd').write_bytes(b'previous successful shader result')
+        for name in ('First', 'Second'):
+            session = output / name
+            session.mkdir()
+            project = run_demo.editor_session_project(prepared, session, run_demo.editor_runtime_cache(prepared, output))
+            current = (project.parent / 'Config/DefaultEngine.ini').read_bytes()
+            self.assertIn(('Path="' + cache.as_posix() + '"').encode(), current)
+            self.assertNotIn(b'%GAMEDIR%DerivedDataCache', current)
+            inputs = json.loads((session / 'editor-inputs.json').read_text())
+            override = inputs['runtime_overrides']['Project/Config/DefaultEngine.ini']
+            self.assertEqual(override['input_sha256'], prepared['products_sha256']['Project/Config/DefaultEngine.ini'])
+            self.assertEqual(override['sha256'], run_demo.build_plugin.sha256(project.parent / 'Config/DefaultEngine.ini'))
+            self.assertEqual(override['cache_directory'], str(cache))
+            self.assertNotEqual(override['input_sha256'], override['sha256'])
+            (project.parent / 'Config/DefaultEngine.ini').write_bytes(b'Editor generated settings')
+        self.assertEqual(config.read_bytes(), original)
+        self.assertEqual((cache / 'owned-shader.udd').read_bytes(), b'previous successful shader result')
+        self.assertFalse(any(path.name.startswith('.write-probe-') for path in cache.iterdir()))
+        self.assertFalse(any('RuntimeDerivedDataCache' in name for name in prepared['products_sha256']))
+
+    def test_runtime_cache_refuses_foreign_directory_protected_inputs_and_missing_graph(self):
+        prepared = self.cache_inputs()
+        output = Path(prepared['uproject']).parent.parent
+        session = output / 'First'
+        session.mkdir()
+        with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'belong'):
+            run_demo.editor_session_project(prepared, session, self.root / 'foreign-cache')
+        prepared['engine_root'] = str(output)
+        with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'protected'):
+            run_demo.editor_runtime_cache(prepared, output)
+        del prepared['engine_root']
+        prepared['derived_data_cache'] = {}
+        with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'verified private'):
+            run_demo.editor_runtime_cache(prepared, output)
+
+    def test_runtime_override_preserves_ue58_store_graph_and_refuses_ambiguous_portable_path(self):
+        prepared = self.editor_inputs()
+        project = Path(prepared['uproject']).parent
+        (project / 'Config/DefaultGame.ini').write_text('[Packaging]\n', encoding='utf-8')
+        prepared['engine_version'] = '5.8'
+        prepared['derived_data_cache'] = run_demo.validate_game.configure_project_cache(project, '5.8')
+        config = project / 'Config/DefaultEngine.ini'
+        prepared['products_sha256']['Project/Config/DefaultEngine.ini'] = run_demo.build_plugin.sha256(config)
+        original = config.read_bytes()
+        output = project.parent
+        cache = run_demo.editor_runtime_cache(prepared, output)
+        session = output / 'First'
+        session.mkdir()
+        copied = run_demo.editor_session_project(prepared, session, cache)
+        actual = (copied.parent / 'Config/DefaultEngine.ini').read_bytes()
+        self.assertEqual(actual, original.replace(b'Path="%GAMEDIR%DerivedDataCache"',
+                                                 ('Path="' + cache.as_posix() + '"').encode()))
+        self.assertIn(b'[DerivedDataCacheStores]', actual)
+        config.write_bytes(original + b'\nPath="%GAMEDIR%DerivedDataCache"\n')
+        prepared['products_sha256']['Project/Config/DefaultEngine.ini'] = run_demo.build_plugin.sha256(config)
+        second = output / 'Second'
+        second.mkdir()
+        with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'one verified portable'):
+            run_demo.editor_session_project(prepared, second, cache)
+        self.assertEqual((second / 'Project/Config/DefaultEngine.ini').read_bytes(), config.read_bytes())
+
+    def test_runtime_cache_refuses_reparse_ancestors_and_keeps_colliding_probe(self):
+        prepared = self.cache_inputs()
+        output = Path(prepared['uproject']).parent.parent
+        cache = output / 'RuntimeDerivedDataCache'
+        cache.mkdir()
+        existing = cache / '.write-probe-fixed'
+        existing.write_bytes(b'preexisting owned evidence')
+        with patch.object(run_demo.secrets, 'token_hex', return_value='fixed'):
+            with self.assertRaises(FileExistsError):
+                run_demo.editor_runtime_cache(prepared, output)
+        self.assertEqual(existing.read_bytes(), b'preexisting owned evidence')
+        original_lstat = Path.lstat
+        def reparse(path):
+            if path == cache:
+                return Mock(st_file_attributes=run_demo.stat.FILE_ATTRIBUTE_REPARSE_POINT, st_mode=run_demo.stat.S_IFDIR)
+            return original_lstat(path)
+        with patch.object(Path, 'lstat', reparse):
+            with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'ordinary'):
+                run_demo.editor_runtime_cache(prepared, output)
+
+    def test_startup_bounds_reject_before_output_or_host(self):
+        with patch.object(run_demo.subprocess, 'Popen') as spawn:
+            for seconds in (True, None, 0, 29, 3601, float('inf')):
+                with self.subTest(seconds=seconds), self.assertRaises(run_demo.build_plugin.BuildError):
+                    run_demo.launch({}, self.root / 'demo.html', self.root / 'Missing', 0, startup_timeout=seconds)
+        spawn.assert_not_called()
+        self.assertFalse((self.root / 'Missing').exists())
+
+    def test_startup_uses_one_deadline_caps_rpc_and_refuses_late_success(self):
+        receipt = {}
+        client = Mock()
+        with patch.object(run_demo.time, 'monotonic', side_effect=[100, 125, 129, 130]):
+            budget = run_demo.StartupDeadline(30, receipt)
+            self.assertEqual(budget.remaining('scene'), 5)
+            with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'timeout during scene'):
+                budget.call(client, 'unreal.engine.info')
+        client.call.assert_called_once_with('unreal.engine.info', timeout=1)
+        self.assertEqual(receipt['phase'], 'scene')
+        self.assertEqual(receipt['elapsed_seconds'], 30)
+
+    def test_expired_endpoint_keeps_failed_receipt_and_owned_cleanup(self):
+        output = self.root / 'Run'
+        output.mkdir()
+        process = Mock(pid=123, returncode=0)
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        clock = [100.0]
+        def connect(*_args, **_kwargs):
+            clock[0] = 131.0
+            raise TimeoutError('native endpoint not ready')
+        with patch.object(run_demo, 'Client', side_effect=connect) as client, \
+                patch.object(run_demo.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(run_demo.subprocess, 'Popen', return_value=process):
+            with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'timeout during endpoint'):
+                run_demo.launch(dict(mode='game', executable=str(self.root / 'Game.exe'), engine_version='5.7'),
+                                self.root / 'unused.html', output, 0, startup_timeout=30)
+        self.assertEqual(client.call_count, 1)
+        process.wait.assert_called_once_with(timeout=60)
+        receipt = json.loads(next(output.glob('Session-*/session.json')).read_text())
+        self.assertEqual(receipt['status'], 'failed')
+        self.assertEqual(receipt['startup'], dict(timeout_seconds=30, phase='endpoint', elapsed_seconds=31.0))
+        self.assertFalse(receipt['forced_cleanup'])
+
+    def test_late_tool_registration_never_opens_view_or_publishes_ready(self):
+        output = self.root / 'Run'
+        output.mkdir()
+        process = Mock(pid=123, returncode=0)
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        client = Mock(timeout=0.5, identity={'pid': 123, 'context': 'game', 'engine_version': '5.7.4'})
+        client.call.return_value = {'engine_ready': True}
+        tools = Mock()
+        clock = [100.0]
+        tools.register.side_effect = lambda **_kwargs: clock.__setitem__(0, 131.0)
+        with patch.object(run_demo, 'Client', return_value=client), \
+                patch.object(run_demo.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(run_demo.subprocess, 'Popen', return_value=process), \
+                patch.object(run_demo.demo_tools, 'DemoTools', return_value=tools), \
+                patch.object(run_demo.demo_tools, 'find_scene', return_value=('world', 'scene')):
+            with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'timeout during tools'):
+                run_demo.launch(dict(mode='game', executable=str(self.root / 'Game.exe'), engine_version='5.7'),
+                                self.root / 'unused.html', output, 0, startup_timeout=30)
+        self.assertEqual([call.args[0] for call in client.call.call_args_list],
+                         ['unreal.engine.info', 'auroraview.host.shutdown'])
+        tools.close.assert_called_once()
+        client.close.assert_called_once()
+        self.assertEqual(client.timeout, 5.0)
+        receipt = json.loads(next(output.glob('Session-*/session.json')).read_text())
+        self.assertEqual(receipt['status'], 'failed')
+        self.assertEqual(receipt['startup']['phase'], 'tools')
+        self.assertNotIn('presentation', receipt)
+
+    def test_late_hello_restores_normal_cleanup_timeout_before_deadline_check(self):
+        output = self.root / 'Run'
+        output.mkdir()
+        process = Mock(pid=123, returncode=0)
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        client = Mock(timeout=0.5)
+        clock = [100.0]
+        cleanup_timeouts = []
+        def connect(*_args, **_kwargs):
+            clock[0] = 131.0
+            return client
+        client.call.side_effect = lambda *_args: cleanup_timeouts.append(client.timeout)
+        with patch.object(run_demo, 'Client', side_effect=connect), \
+                patch.object(run_demo.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(run_demo.subprocess, 'Popen', return_value=process):
+            with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'timeout during scene'):
+                run_demo.launch(dict(mode='game', executable=str(self.root / 'Game.exe'), engine_version='5.7'),
+                                self.root / 'unused.html', output, 0, startup_timeout=30)
+        self.assertEqual(cleanup_timeouts, [5.0])
+        client.call.assert_called_once_with('auroraview.host.shutdown')
+        client.close.assert_called_once()
+        process.wait.assert_called_once_with(timeout=60)
+        receipt = json.loads(next(output.glob('Session-*/session.json')).read_text())
+        self.assertEqual(receipt['status'], 'failed')
+        self.assertEqual(receipt['startup']['phase'], 'scene')
+        self.assertFalse(receipt['forced_cleanup'])
+
     def test_dock_retries_only_layout_readiness_and_returns_real_attachment(self):
         client = Mock()
         state = {'attached_to_root_window': True}
@@ -185,7 +382,7 @@ class DemoLaunchGuards(unittest.TestCase):
             identity = {'pid': 123, 'context': 'game', 'engine_version': '5.7.4'}
             def __init__(self, *_args, **_kwargs):
                 pass
-            def call(self, method, *_args):
+            def call(self, method, *_args, **_kwargs):
                 if method == 'unreal.engine.info':
                     return {'engine_ready': True}
                 if method == 'auroraview.view.open':
@@ -201,7 +398,7 @@ class DemoLaunchGuards(unittest.TestCase):
             def __init__(self, *_args):
                 self.browser_ready = threading.Event()
                 self.browser_ready.set()
-            def register(self):
+            def register(self, **_kwargs):
                 pass
             def close(self):
                 pass

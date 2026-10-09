@@ -10,6 +10,7 @@ forcibly stop a user thread.
 import inspect
 import json
 import logging
+import math
 import queue
 import socket
 import threading
@@ -317,7 +318,7 @@ class Client:
         if not isinstance(method, str) or not method or len(method) > 256 or method.startswith(("auroraview.", "unreal.")):
             raise ValueError("Tool names must be nonempty and cannot use reserved auroraview. or unreal. namespaces")
 
-    def _bind(self, functions, allow_rebind, descriptors=None):
+    def _bind(self, functions, allow_rebind, descriptors=None, timeout=None):
         for name, function in functions.items():
             self._validate_tool_name(name)
             if not callable(function):
@@ -331,7 +332,13 @@ class Client:
                 previous = {name: self._handlers.get(name, _ABSENT) for name in functions}
                 self._handlers.update(functions)
             try:
-                self.call("auroraview.tools.register", {"tools": tools})
+                if timeout is None:
+                    self.call("auroraview.tools.register", {"tools": tools})
+                else:
+                    duration = float(timeout() if callable(timeout) else timeout)
+                    if not math.isfinite(duration) or duration <= 0:
+                        raise ValueError("Registration timeout must be finite and positive")
+                    self.call("auroraview.tools.register", {"tools": tools}, timeout=duration)
             except Exception:
                 with self._lock:
                     for name, function in functions.items():
@@ -342,12 +349,15 @@ class Client:
                                 self._handlers[name] = previous[name]
                 raise
 
-    def bind_tool(self, descriptor, handler, *, allow_rebind=False):
+    def bind_tool(self, descriptor, handler, *, allow_rebind=False, timeout=None):
         """Publish an explicit JSON tool contract and return its ownership handle.
 
         inputSchema/outputSchema/annotations are retained unchanged. parameters
         mirrors inputSchema for consumers of the original native SDK catalog.
         Schema validation remains the declared tool handler's responsibility.
+        timeout is a per-registration RPC duration or zero-argument callback
+        returning that duration immediately before dispatch. Callback failures
+        roll back the local handler; omission retains the client default.
         """
         if not isinstance(descriptor, dict):
             raise TypeError("Tool descriptor must be a JSON object")
@@ -388,12 +398,19 @@ class Client:
         def invoke(*args, **kwargs):
             return handler(*args, **kwargs)
 
-        self._bind({contract["name"]: invoke}, allow_rebind, [contract])
+        self._bind({contract["name"]: invoke}, allow_rebind, [contract], timeout=timeout)
         return ToolBinding(self, contract["name"], invoke)
 
-    def bind_call(self, method, func=None, *, allow_rebind=True):
+    def bind_call(self, method, func=None, *, allow_rebind=True, timeout=None):
+        """Publish a handler directly or as a decorator.
+
+        timeout is a per-registration RPC duration or zero-argument callback
+        evaluated immediately before dispatch, including decorator application.
+        Callback failures roll back the local handler. Omission retains the
+        client default; subsequent calls and cleanup keep their normal timeout.
+        """
         def bind(function):
-            self._bind({method: function}, allow_rebind)
+            self._bind({method: function}, allow_rebind, timeout=timeout)
             return function
         return bind if func is None else bind(func)
 

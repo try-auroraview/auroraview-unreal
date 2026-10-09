@@ -52,6 +52,10 @@ The launcher checks package integrity and engine identity before reuse. Copy the
 
 To reopen the same prepared output, pass `--reuse` with the original command. Reuse requires matching engine, source, sample-template and package identities. Each Editor session receives a verified copy of the prepared project, so Editor configuration writes do not change the reusable build inputs. After changing those inputs, use a new output directory. The launcher does not replace an unrelated existing directory.
 
+Editor sessions reuse only that output's `RuntimeDerivedDataCache`, so a new session project keeps previously compiled shader results. Only the session's copied cache path changes; verified build configuration and products stay intact. `editor-inputs.json` records both the original configuration hash and the runtime override. No Engine or shared cache is selected, and writable-directory checks alone do not certify native cache use.
+
+`--startup-timeout 900` bounds native endpoint, scene and dashboard readiness with one budget (30–3600 seconds; default 900). Cold Editor shader work can take longer than a warm launch. `--timeout` remains the build timeout. Native readiness and each tool-registration call use at most five seconds or the remaining budget, whichever is shorter. No subsequent registration starts after expiry, and late completion cannot report ready. RPC completion and normal/forced cleanup can extend past the readiness deadline; the session receipt records the readiness phase, elapsed time and actual cleanup outcome.
+
 Use `--prepare-only` to build and prepare without opening Unreal. For a bounded scripted demonstration, use `--session-seconds 60`; the launcher requests normal shutdown after that interval. An ordinary interactive launch stays open until Ctrl+C or host closure.
 
 ## Run an offline game bundle

@@ -205,6 +205,24 @@ class PythonClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Client(1234, TOKEN, host="localhost")
 
+    def test_nonfinite_connection_timeout_rejected_before_connect(self):
+        for duration in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(timeout=duration), mock.patch(
+                    "auroraview_unreal.client.socket.create_connection",
+                    side_effect=AssertionError("Invalid timeout reached the transport")) as connect:
+                with self.assertRaises(ValueError):
+                    Client(1234, TOKEN, timeout=duration)
+                connect.assert_not_called()
+
+    def test_nonfinite_call_timeout_does_not_dispatch_or_consume_pending_slot(self):
+        with Peer() as host, Client(host.port, TOKEN, max_pending=1) as client:
+            for duration in (float("nan"), float("inf"), float("-inf")):
+                with self.subTest(timeout=duration), self.assertRaises(ValueError):
+                    client.call_async("test.wait", timeout=duration)
+            self.assertEqual(client.call("test.echo", 42, timeout=0.5), 42)
+            self.assertEqual(host.calls.get(timeout=1)["method"], "test.echo")
+            self.assertTrue(host.calls.empty())
+
     def test_core_calls_preserve_parameter_shape_and_errors(self):
         with Peer() as host, Client(host.port, TOKEN) as client:
             self.assertEqual(client.call("test.echo"), {"absent": True})

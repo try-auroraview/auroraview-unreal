@@ -229,8 +229,8 @@ def run_logged(command, working, log, environment, timeout):
         process = subprocess.Popen(command, cwd=working, env=environment, stdout=stream,
                                    stderr=subprocess.STDOUT, startupinfo=startup)
         process_receipt['pid'] = process.pid
-        write_json(path, process_receipt)
         try:
+            write_json(path, process_receipt)
             process_receipt['exit_code'] = process.wait(timeout=timeout)
             if process.returncode:
                 raise build_plugin.BuildError(f'Native build exited {process.returncode}; see {log}')
@@ -238,9 +238,17 @@ def run_logged(command, working, log, environment, timeout):
             process_receipt['timed_out'] = True
             raise build_plugin.BuildError(f'Native build exceeded {timeout} seconds') from error
         finally:
-            stop_owned(process)
-            process_receipt.update(exit_code=process.returncode, completed_utc=now())
-            write_json(path, process_receipt)
+            primary_error = sys.exc_info()[1]
+            try:
+                try:
+                    stop_owned(process)
+                finally:
+                    process_receipt.update(exit_code=process.returncode, completed_utc=now())
+                    write_json(path, process_receipt)
+            except Exception as cleanup_error:
+                if primary_error is not None:
+                    raise primary_error from cleanup_error
+                raise
 
 
 def editor_command(engine, project, policy, log_file):

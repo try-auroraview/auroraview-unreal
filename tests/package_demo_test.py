@@ -1,4 +1,5 @@
 """Offline prerequisite integrity checks; synthetic fixtures are not native acceptance."""
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -81,12 +82,142 @@ class OfflineBundleTests(unittest.TestCase):
                             engine=dict(root=str(self.engine), version=version, build_id='fixture-build',
                                         version_sha256=package_demo.build_plugin.sha256(version_file),
                                         modules_sha256=package_demo.build_plugin.sha256(modules_file)))
-        write(self.game / 'evidence/game-validation.json', json.dumps(self.receipt))
         for name in ['python/auroraview_unreal/__init__.py', 'Resources/live_demo.html', 'LICENSE']:
             write(self.source / name, 'synthetic source file')
         for name in ['run_demo.py', 'demo_tools.py', 'owner_dispatch.py', 'build_plugin.py', 'validate_game.py',
                      'preflight_engine.py', 'pe_evidence.py']:
             write(self.source / 'scripts' / name, '# synthetic launcher input\n')
+        self.identity['files'] = package_demo.validate_game.inventory(self.source)
+        self.identity['working_files_sha256'] = hashlib.sha256(
+            json.dumps(self.identity['files'], sort_keys=True).encode()).hexdigest()
+        write(self.game / 'evidence/game-validation.json', json.dumps(self.receipt))
+
+    def test_changed_source_bytes_are_rejected_even_when_the_source_is_restored(self):
+        source_file = self.source / 'Resources/live_demo.html'
+        original = source_file.read_bytes()
+        copytree = package_demo.shutil.copytree
+
+        def verify(_installer):
+            write(source_file, 'different bytes copied under the original source identity')
+            return signature()
+
+        def copy_then_restore(source, target, **kwargs):
+            result = copytree(source, target, **kwargs)
+            if source == self.source / 'Resources':
+                source_file.write_bytes(original)
+            return result
+
+        with patch.object(package_demo, 'ROOT', self.source), \
+                patch.object(package_demo.build_plugin, 'git_identity', return_value=self.identity), \
+                patch.object(package_demo, 'microsoft_installer', side_effect=verify), \
+                patch.object(package_demo.shutil, 'copytree', side_effect=copy_then_restore):
+            with self.assertRaisesRegex(package_demo.build_plugin.BuildError, 'Copied source'):
+                package_demo.package_demo(self.game, self.output)
+        self.assertEqual(package_demo.validate_game.inventory(self.source), self.identity['files'])
+        self.assertFalse(self.output.with_name(self.output.name + '.zip').exists())
+
+    def test_new_source_resource_after_the_initial_inventory_is_rejected(self):
+        def verify(_installer):
+            write(self.source / 'Resources/late.js', 'not present in the accepted source inventory')
+            return signature()
+
+        with patch.object(package_demo, 'ROOT', self.source), \
+                patch.object(package_demo.build_plugin, 'git_identity', return_value=self.identity), \
+                patch.object(package_demo, 'microsoft_installer', side_effect=verify):
+            with self.assertRaisesRegex(package_demo.build_plugin.BuildError, 'Copied source'):
+                package_demo.package_demo(self.game, self.output)
+        self.assertFalse(self.output.with_name(self.output.name + '.zip').exists())
+
+    def test_replaced_game_receipt_cannot_become_the_bundle_verification_digest(self):
+        receipt_path = self.game / 'evidence/game-validation.json'
+        original = receipt_path.read_bytes()
+        for name, replacement in [('failed', json.dumps(dict(self.receipt, status='failed')).encode()),
+                                  ('same-json-new-bytes', original + b'\n')]:
+            with self.subTest(replacement=name):
+                receipt_path.write_bytes(original)
+                output = self.root / ('Bundle-' + name)
+
+                def verify(_installer):
+                    receipt_path.write_bytes(replacement)
+                    return signature()
+
+                with patch.object(package_demo, 'ROOT', self.source), \
+                        patch.object(package_demo.build_plugin, 'git_identity', return_value=self.identity), \
+                        patch.object(package_demo, 'microsoft_installer', side_effect=verify):
+                    with self.assertRaisesRegex(package_demo.build_plugin.BuildError, 'Game receipt changed'):
+                        package_demo.package_demo(self.game, output)
+                self.assertFalse(output.with_name(output.name + '.zip').exists())
+
+    def test_mutation_during_zip_creation_removes_the_owned_archive(self):
+        receipt_path = self.game / 'evidence/game-validation.json'
+        original = receipt_path.read_bytes()
+        zip_write = package_demo.zipfile.ZipFile.write
+        for mutation in ['source', 'receipt']:
+            with self.subTest(mutation=mutation):
+                receipt_path.write_bytes(original)
+                output = self.root / ('Bundle-zip-' + mutation)
+
+                def mutate(bundle, filename, *args, **kwargs):
+                    if filename == output / 'Resources/live_demo.html':
+                        if mutation == 'source':
+                            write(filename, 'changed after the copied source inventory')
+                        else:
+                            receipt_path.write_bytes(original + b'\n')
+                    return zip_write(bundle, filename, *args, **kwargs)
+
+                with patch.object(package_demo, 'ROOT', self.source), \
+                        patch.object(package_demo.build_plugin, 'git_identity', return_value=self.identity), \
+                        patch.object(package_demo, 'microsoft_installer', return_value=signature()), \
+                        patch.object(package_demo.zipfile.ZipFile, 'write', new=mutate):
+                    with self.assertRaisesRegex(package_demo.build_plugin.BuildError,
+                                                'Copied source ZIP' if mutation == 'source' else 'Game receipt changed'):
+                        package_demo.package_demo(self.game, output)
+                self.assertFalse(output.with_name(output.name + '.zip').exists())
+                self.assertTrue((output / 'Resources/live_demo.html').is_file())
+                self.assertEqual(package_demo.validate_game.inventory(self.source), self.identity['files'])
+
+    def test_zip_creation_collision_preserves_the_other_archive(self):
+        zip_path = self.output.with_name(self.output.name + '.zip')
+        existing = b'another invocation owns these bytes'
+
+        def verify(_installer):
+            zip_path.write_bytes(existing)
+            return signature()
+
+        with patch.object(package_demo, 'ROOT', self.source), \
+                patch.object(package_demo.build_plugin, 'git_identity', return_value=self.identity), \
+                patch.object(package_demo, 'microsoft_installer', side_effect=verify):
+            with self.assertRaises(FileExistsError):
+                package_demo.package_demo(self.game, self.output)
+        self.assertEqual(zip_path.read_bytes(), existing)
+
+    def test_interrupted_zip_write_removes_owned_archive_and_preserves_inputs(self):
+        interrupted = KeyboardInterrupt('synthetic archive cancellation')
+        receipt_path = self.game / 'evidence/game-validation.json'
+        receipt_bytes = receipt_path.read_bytes()
+        with patch.object(package_demo, 'ROOT', self.source), \
+                patch.object(package_demo.build_plugin, 'git_identity', return_value=self.identity), \
+                patch.object(package_demo, 'microsoft_installer', return_value=signature()), \
+                patch.object(package_demo.zipfile.ZipFile, 'write', side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                package_demo.package_demo(self.game, self.output)
+        self.assertIs(caught.exception, interrupted)
+        self.assertEqual(package_demo.validate_game.inventory(self.source), self.identity['files'])
+        self.assertEqual(receipt_path.read_bytes(), receipt_bytes)
+        self.assertTrue((self.output / 'Resources/live_demo.html').is_file())
+        zip_path = self.output.with_name(self.output.name + '.zip')
+        self.assertFalse(zip_path.exists(),
+                         f'Canceled archive retained an owned ZIP of {zip_path.stat().st_size if zip_path.exists() else 0} bytes')
+
+    def test_source_copy_ignores_python_cache_using_the_same_inventory_filter(self):
+        for name in ['__pycache__/cached.pyc', 'module.pyc', 'cache.pyc/nested.js']:
+            write(self.source / 'Resources' / name, 'ignored source cache')
+        with patch.object(package_demo, 'ROOT', self.source), \
+                patch.object(package_demo.build_plugin, 'git_identity', return_value=self.identity), \
+                patch.object(package_demo, 'microsoft_installer', return_value=signature()):
+            result = package_demo.package_demo(self.game, self.output)
+        with zipfile.ZipFile(result['archive']) as bundle:
+            self.assertFalse(any('__pycache__' in name or '.pyc' in name for name in bundle.namelist()))
 
     def test_bundle_hash_binds_manual_microsoft_prerequisite(self):
         with patch.object(package_demo, 'ROOT', self.source), \
@@ -100,7 +231,13 @@ class OfflineBundleTests(unittest.TestCase):
         self.assertEqual(prerequisite['minimum_msvc_family'], '14.44')
         self.assertEqual(prerequisite['observed_toolchain_versions'], ['14.44.35225'])
         self.assertIs(prerequisite['automatic_install'], False)
+        self.assertEqual(manifest['verification']['game_receipt_sha256'],
+                         hashlib.sha256((self.game / 'evidence/game-validation.json').read_bytes()).hexdigest())
         self.assertTrue(Path(result['archive']).is_file())
+        with zipfile.ZipFile(result['archive']) as bundle:
+            for name, digest in self.identity['files'].items():
+                copied = bundle.read(self.output.name + '/' + name)
+                self.assertEqual(hashlib.sha256(copied).hexdigest(), digest)
         readme = (self.output / 'README.txt').read_text(encoding='utf-8')
         self.assertIn(prerequisite['path'], readme)
         self.assertIn('never installs prerequisites automatically', readme)

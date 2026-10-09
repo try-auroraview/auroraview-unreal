@@ -2,6 +2,8 @@
 """Bundle a verified Development Game with the offline Python/demo launcher."""
 import argparse
 from datetime import datetime, timezone
+import fnmatch
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -111,7 +113,14 @@ def package_demo(game_run, output):
     if output.exists() or zip_path.exists():
         raise build_plugin.BuildError('Use a new demo bundle output')
     receipt_path = game_run / 'evidence/game-validation.json'
-    receipt = build_plugin.read_json(receipt_path)
+    try:
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = json.loads(receipt_bytes.decode('utf-8-sig'))
+    except (OSError, ValueError) as error:
+        raise build_plugin.BuildError(f'Cannot read JSON {receipt_path}: {error}') from error
+    if not isinstance(receipt, dict):
+        raise build_plugin.BuildError(f'Expected a JSON object: {receipt_path}')
+    receipt_digest = hashlib.sha256(receipt_bytes).hexdigest()
     if (receipt.get('status') != 'passed' or receipt.get('packaged_game') != 'pass'
             or receipt.get('runtime', {}).get('exit_code') != 0
             or receipt.get('runtime', {}).get('forced_cleanup') is not False
@@ -129,6 +138,19 @@ def package_demo(game_run, output):
                   and Path(name).name in [validate_game.PROJECT + '.exe', validate_game.PROJECT + '-Win64-Development.exe']]
     if len(candidates) != 1:
         raise build_plugin.BuildError('No unique receipt-bound Game executable')
+    source_directories = ['python/auroraview_unreal', 'Resources']
+    source_scripts = ['run_demo.py', 'demo_tools.py', 'owner_dispatch.py', 'build_plugin.py', 'validate_game.py',
+                      'preflight_engine.py', 'pe_evidence.py']
+    source_files = {'LICENSE', *('scripts/' + name for name in source_scripts)}
+    ignored_source = ('__pycache__', '*.pyc')
+
+    def copied_source(name):
+        return (name in source_files or
+                any(name.startswith(directory + '/') for directory in source_directories)
+                and not any(fnmatch.fnmatch(part, pattern) for part in Path(name).parts
+                            for pattern in ignored_source))
+
+    accepted_source = {name: digest for name, digest in source['files'].items() if copied_source(name)}
     installer, redist = prerequisite(receipt)
     output.mkdir(parents=True)
     (output / 'Game').mkdir()
@@ -141,12 +163,11 @@ def package_demo(game_run, output):
         shutil.copy2(archive / name, path)
         if build_plugin.sha256(path) != digest:
             raise build_plugin.BuildError('Accepted Game product changed while copying the bundle')
-    for directory in ['python/auroraview_unreal', 'Resources']:
+    for directory in source_directories:
         shutil.copytree(ROOT / directory, output / directory,
-                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+                        ignore=shutil.ignore_patterns(*ignored_source))
     (output / 'scripts').mkdir()
-    for name in ['run_demo.py', 'demo_tools.py', 'owner_dispatch.py', 'build_plugin.py', 'validate_game.py',
-                 'preflight_engine.py', 'pe_evidence.py']:
+    for name in source_scripts:
         shutil.copy2(ROOT / 'scripts' / name, output / 'scripts' / name)
     shutil.copy2(ROOT / 'LICENSE', output / 'LICENSE')
     (output / 'Prerequisites').mkdir()
@@ -173,6 +194,11 @@ def package_demo(game_run, output):
         'The control endpoint is authenticated, opt-in, loopback-only.\n'
         'This demo runs Development; Shipping is compiled separately.\n'
         'Project: https://github.com/try-auroraview/auroraview-unreal\n', encoding='utf-8')
+    copied_files = validate_game.inventory(output)
+    if {name: digest for name, digest in copied_files.items() if copied_source(name)} != accepted_source:
+        raise build_plugin.BuildError('Copied source differs from the verified Game inputs')
+    if build_plugin.sha256(receipt_path) != receipt_digest:
+        raise build_plugin.BuildError('Game receipt changed while copying the bundle')
     version = receipt['engine']['version']
     manifest = dict(schema_version=1, configuration='Development',
                     engine_version=f'{version["MajorVersion"]}.{version["MinorVersion"]}',
@@ -182,16 +208,39 @@ def package_demo(game_run, output):
                             'working_files_sha256': source['working_files_sha256']},
                     executable='Game/' + candidates[0],
                     prerequisites={'vc_redist_x64': redist},
-                    verification={'game_receipt_sha256': build_plugin.sha256(receipt_path),
+                    verification={'game_receipt_sha256': receipt_digest,
                                   'native_scene': 'pass', 'normal_exit_code': 0,
                                   'rendered_browser': receipt.get('rendered_browser', 'not_run')},
                     created_utc=datetime.now(timezone.utc).isoformat(),
-                    files_sha256=validate_game.inventory(output))
+                    files_sha256=copied_files)
     (output / 'demo-package.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-    with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
-        for path in sorted(output.rglob('*')):
-            if path.is_file():
-                bundle.write(path, output.name + '/' + path.relative_to(output).as_posix())
+    # Exclusive creation makes failure cleanup safe for this invocation's ZIP.
+    bundle = zipfile.ZipFile(zip_path, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6)
+    try:
+        with bundle:
+            for path in sorted(output.rglob('*')):
+                if path.is_file():
+                    bundle.write(path, output.name + '/' + path.relative_to(output).as_posix())
+        with zipfile.ZipFile(zip_path) as bundle:
+            prefix = output.name + '/'
+            archived_source = {}
+            for name in bundle.namelist():
+                if name.startswith(prefix) and copied_source(name[len(prefix):]):
+                    digest = hashlib.sha256()
+                    with bundle.open(name) as stream:
+                        for block in iter(lambda: stream.read(1024 * 1024), b''):
+                            digest.update(block)
+                    archived_source[name[len(prefix):]] = digest.hexdigest()
+            if archived_source != accepted_source:
+                raise build_plugin.BuildError('Copied source ZIP differs from the verified Game inputs')
+        if build_plugin.sha256(receipt_path) != receipt_digest:
+            raise build_plugin.BuildError('Game receipt changed while archiving the bundle')
+    except BaseException as error:
+        try:
+            zip_path.unlink()
+        except OSError as cleanup_error:
+            raise error from cleanup_error
+        raise
     return {'bundle': str(output), 'archive': str(zip_path), 'sha256': build_plugin.sha256(zip_path),
             'source_commit': source['commit'], 'engine_version': manifest['engine_version']}
 

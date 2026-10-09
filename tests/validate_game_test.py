@@ -736,6 +736,66 @@ class GameConfigurationFlowTests(unittest.TestCase):
 
 
 class GameCleanupTests(unittest.TestCase):
+    def test_initial_build_receipt_write_failure_still_stops_the_owned_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            process = Mock(pid=123, returncode=None)
+            process.poll.return_value = None
+
+            def wait(**_kwargs):
+                process.returncode = 1
+                return 1
+
+            process.wait.side_effect = wait
+            write_json = validator.write_json
+            calls = []
+
+            def write_receipt(path, value):
+                calls.append(path)
+                if len(calls) == 1:
+                    raise PermissionError('initial process receipt write failed')
+                write_json(path, value)
+
+            with patch.object(validator.subprocess, 'Popen', return_value=process), \
+                    patch.object(validator.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as kill, \
+                    patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}), \
+                    patch.object(validator, 'write_json', side_effect=write_receipt):
+                with self.assertRaisesRegex(PermissionError, 'initial process receipt'):
+                    validator.run_logged(['synthetic-never-launched'], root, root / 'build.log', {}, 30)
+            self.assertEqual(kill.call_count, 1)
+            process.wait.assert_called_once_with(timeout=15)
+            receipt = json.loads((root / 'build.process.json').read_bytes())
+            self.assertEqual(receipt['exit_code'], 1)
+            self.assertTrue(receipt['completed_utc'])
+
+    def test_cleanup_failure_preserves_the_original_build_receipt_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            process = Mock(pid=123, returncode=None)
+            process.poll.return_value = None
+            cleanup_error = validator.subprocess.TimeoutExpired(['synthetic-never-launched'], 15)
+            process.wait.side_effect = cleanup_error
+            write_json = validator.write_json
+            calls = []
+
+            def write_receipt(path, value):
+                calls.append(path)
+                if len(calls) == 1:
+                    raise PermissionError('initial process receipt write failed')
+                write_json(path, value)
+
+            with patch.object(validator.subprocess, 'Popen', return_value=process), \
+                    patch.object(validator.subprocess, 'run', return_value=SimpleNamespace(returncode=1)), \
+                    patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}), \
+                    patch.object(validator, 'write_json', side_effect=write_receipt):
+                with self.assertRaisesRegex(PermissionError, 'initial process receipt') as caught:
+                    validator.run_logged(['synthetic-never-launched'], root, root / 'build.log', {}, 30)
+            self.assertIs(caught.exception.__cause__, cleanup_error)
+            process.wait.assert_called_once_with(timeout=15)
+            receipt = json.loads((root / 'build.process.json').read_bytes())
+            self.assertIsNone(receipt['exit_code'])
+            self.assertTrue(receipt['completed_utc'])
+
     def test_failed_forced_wait_preserves_host_failure_and_finalizes_redacted_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
             evidence = Path(temporary)

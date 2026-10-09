@@ -190,8 +190,8 @@ class Client:
             raise ValueError("port must be an integer from 1 to 65535")
         if not isinstance(token, str) or len(token) < 32:
             raise ValueError("token must contain at least 32 characters")
-        if timeout <= 0 or any(type(value) is not int or value <= 0 for value in (max_pending, max_workers, max_queued)):
-            raise ValueError("timeouts and worker/pending limits must be positive")
+        if not math.isfinite(timeout) or timeout <= 0 or any(type(value) is not int or value <= 0 for value in (max_pending, max_workers, max_queued)):
+            raise ValueError("timeouts must be finite and positive; worker/pending limits must be positive")
         self.timeout = float(timeout)
         self.child_id = "python-" + uuid.uuid4().hex
         self._expected = expected_pid, expected_engine, expected_context
@@ -257,8 +257,8 @@ class Client:
         if not isinstance(method, str) or not method or len(method) > 256:
             raise ValueError("method must be a nonempty string of at most 256 characters")
         duration = self.timeout if timeout is None else float(timeout)
-        if duration <= 0:
-            raise ValueError("timeout must be positive")
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("timeout must be finite and positive")
         request_id, future = uuid.uuid4().hex, Future()
         with self._lock:
             self._ensure_open()

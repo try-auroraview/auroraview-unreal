@@ -1,5 +1,6 @@
 """Packaged Game validation guards; synthetic files only, never native evidence."""
 import importlib.util
+import configparser
 import json
 from pathlib import Path
 import struct
@@ -7,6 +8,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -230,6 +232,67 @@ class PackagedGameGuards(unittest.TestCase):
                 self.assertEqual('BuildSettingsVersion.Latest' in text, version.startswith('5.'))
                 self.assertEqual('EngineIncludeOrderVersion.Latest' in text, version.startswith('5.'))
                 self.assertEqual('BuildSettingsVersion.V2' in text, version == '4.26')
+
+    def test_cook_selects_the_private_cache_graph_on_every_supported_engine(self):
+        for version in validator.preflight_engine.SUPPORTED_VERSIONS:
+            with self.subTest(version=version):
+                major, minor = map(int, version.split('.'))
+                policy = validator.preflight_engine.engine_policy({'MajorVersion': major, 'MinorVersion': minor})
+                command = validator.game_command(self.engine, self.project / 'Fixture.uproject', self.archive, policy)
+                self.assertEqual([arg for arg in command if arg.startswith('-AdditionalCookerOptions=')],
+                                 ['-AdditionalCookerOptions=-ddc=AuroraViewValidationDDC'])
+
+    def test_cache_graph_is_portable_writable_and_has_no_shared_store_or_path_overrides(self):
+        package = self.root / 'CachePackage'
+        package.mkdir()
+        for version in validator.preflight_engine.SUPPORTED_VERSIONS:
+            with self.subTest(version=version):
+                project = self.root / ('cache-' + version)
+                with patch.dict(validator.os.environ, {'UE-LocalDataCachePath': str(self.root / 'foreign-cache')}):
+                    receipt = validator.create_project(project, package, version)
+                config = project / 'Config/DefaultEngine.ini'
+                text = config.read_text(encoding='utf-8')
+                parser = configparser.RawConfigParser(strict=False)
+                parser.optionxform = str
+                parser.read_string(text)
+                if version == '5.8':
+                    self.assertEqual(parser['DerivedDataCacheGraphs']['AuroraViewValidationDDC'],
+                                     '(AuroraViewValidationLocal)')
+                    nodes = dict(parser['DerivedDataCacheStores'])
+                    self.assertEqual(set(nodes), {'AuroraViewValidationLocal'})
+                    local = nodes['AuroraViewValidationLocal']
+                else:
+                    nodes = dict(parser['AuroraViewValidationDDC'])
+                    self.assertEqual(set(nodes), {'Root', 'AsyncPut', 'Local'})
+                    self.assertEqual(nodes['Root'], '(Type=KeyLength,Length=120,Inner=AsyncPut)')
+                    self.assertEqual(nodes['AsyncPut'], '(Type=AsyncPut,Inner=Local)')
+                    self.assertIn('DeleteOnly=false', nodes['Local'])
+                    local = nodes['Local']
+                self.assertIn('Type=FileSystem', local)
+                self.assertIn('ReadOnly=false', local)
+                self.assertIn('Path="%GAMEDIR%DerivedDataCache"', local)
+                for external in ['Zen', 'Shared', 'Cloud', 'Override']:
+                    self.assertNotIn(external, '\n'.join(nodes.values()))
+                self.assertNotIn(str(project), text)
+                cache = project / 'DerivedDataCache'
+                self.assertTrue(cache.is_dir())
+                self.assertEqual(list(cache.iterdir()), [])
+                self.assertEqual(receipt['directory'], str(cache))
+                self.assertEqual(receipt['config_sha256'], validator.build_plugin.sha256(config))
+                self.assertEqual(receipt['writable_probe'], 'pass')
+                self.assertFalse((self.root / 'foreign-cache').exists())
+                packaging = configparser.RawConfigParser(strict=False)
+                packaging.read(project / 'Config/DefaultGame.ini', encoding='utf-8')
+                if version.startswith('5.'):
+                    self.assertFalse(packaging.getboolean('/Script/UnrealEd.ProjectPackagingSettings', 'bUseZenStore'))
+
+    def test_legacy_cache_path_limit_fails_before_native_cook_or_config_writes(self):
+        for version in ('4.18', '4.26'):
+            with self.subTest(version=version):
+                project = self.root / ('long-project-' + 'x' * 120)
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, '119 characters'):
+                    validator.configure_project_cache(project, version)
+                self.assertFalse(project.exists())
 
 
 class StagedExecutableGuards(unittest.TestCase):
@@ -480,6 +543,65 @@ class GameExecutionPolicyTests(unittest.TestCase):
                 self.assertIn('-Windowed', arguments)
                 self.assertNotIn('-NullRHI', arguments)
                 self.assertNotIn('-RenderOffscreen', arguments)
+
+
+class GameCleanupTests(unittest.TestCase):
+    def test_failed_forced_wait_preserves_host_failure_and_finalizes_redacted_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            token = 'private-cleanup-fixture-token-' * 3
+            process = Mock(pid=123, returncode=None)
+            process.poll.return_value = None
+            process.wait.side_effect = validator.subprocess.TimeoutExpired(['Game.exe', token], 15)
+            client = Mock(identity={'pid': 123})
+            client.call.return_value = {}  # Reject the live identity before any mutation.
+            client.close.side_effect = TimeoutError('Client cleanup token=' + token)
+            api = SimpleNamespace(Client=Mock(return_value=client), ProtocolError=ValueError, RemoteError=RuntimeError)
+
+            def popen(_command, **kwargs):
+                kwargs['stdout'].write(token.encode())
+                (evidence / 'Game.log').write_text('Host command token=' + token, encoding='utf-8')
+                return process
+
+            with patch.dict(sys.modules, {'auroraview_unreal': api}), \
+                    patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}), \
+                    patch.object(validator.secrets, 'token_urlsafe', return_value=token), \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
+                    patch.object(validator.subprocess, 'Popen', popen), \
+                    patch.object(validator.subprocess, 'run', return_value=SimpleNamespace(returncode=1)):
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, 'Live Game engine identity'):
+                    validator.run_game(evidence / 'Game.exe', evidence, '5.7', 30)
+
+            process.wait.assert_called_once_with(timeout=15)
+            result = json.loads((evidence / 'game-process.json').read_text())
+            self.assertIn('Live Game engine identity', result['error'])
+            self.assertEqual(len(result['cleanup_errors']), 2)
+            self.assertTrue(result['forced_cleanup'])
+            self.assertIsNone(result['exit_code'])
+            self.assertTrue(result['completed_utc'])
+            for path in evidence.iterdir():
+                self.assertNotIn(token, path.read_text())
+
+    def test_launch_exception_does_not_expose_its_command_token(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            token = 'private-startup-fixture-token-' * 3
+            api = SimpleNamespace(Client=Mock(), ProtocolError=ValueError, RemoteError=RuntimeError)
+            failure = validator.subprocess.TimeoutExpired(['Game.exe', '-AuroraViewHostToken=' + token], 5)
+            with patch.dict(sys.modules, {'auroraview_unreal': api}), \
+                    patch.object(validator.secrets, 'token_urlsafe', return_value=token), \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
+                    patch.object(validator.subprocess, 'Popen', side_effect=failure):
+                with self.assertRaises(validator.build_plugin.BuildError) as raised:
+                    validator.run_game(evidence / 'Game.exe', evidence, '5.7', 30)
+            self.assertNotIn(token, str(raised.exception))
+            self.assertTrue(raised.exception.__suppress_context__)
+            result = json.loads((evidence / 'game-process.json').read_text())
+            self.assertIn('<redacted>', result['error'])
+            self.assertTrue(result['completed_utc'])
+            self.assertNotIn(token, json.dumps(result))
 
 
 if __name__ == '__main__':

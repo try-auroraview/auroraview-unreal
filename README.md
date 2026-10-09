@@ -1,6 +1,24 @@
 # AuroraView Unreal
 
-Experimental native AuroraView integration for Win64 **Unreal Editor and packaged games**. The source/build matrix matches dcc-mcp-unreal: **4.18, 4.26, 5.5, 5.7 and 5.8**. Each engine requires its own build and acceptance receipts; admission to the matrix alone does not certify compatibility.
+Native AuroraView integration for Win64 **Unreal Editor and packaged games**: show web tools inside Unreal, call external Python, and control loaded Unreal objects through native tools.
+
+## Run the visible demo
+
+Clone this repository, use Python 3.9+ and an installed Unreal engine with its supported Visual Studio/Windows SDK, then run from the checkout:
+
+```powershell
+python scripts/run_demo.py --engine-root "C:\Program Files\Epic Games\UE_5.7" --mode editor --output "C:\AuroraViewDemo\Editor"
+```
+
+Use a fresh output directory outside the checkout and engine. The launcher builds the plugin and a sample project, opens a real Unreal scene with two colored cubes, and starts an AuroraView dashboard connected to an external Python tool provider. Use the dashboard to inspect the actual host, run Python `6 × 7`, lift/reset a cube, and verify a browser → Python → browser event round trip. Native state readback reports the scene change.
+
+For a cooked Development game, change `--mode editor` to `--mode game` and choose a new output directory. Keep the launcher running while using its Python tools. Press Ctrl+C for a graceful shutdown.
+
+See the [complete demo guide](docs/live-demo.md) for packaged offline launches, safe output reuse, expected results and actual validation evidence. The [demo architecture](docs/demo-architecture.md) explains how to replace the sample scene and tools.
+
+## Integrate your tools
+
+The source/build matrix matches dcc-mcp-unreal: **4.18, 4.26, 5.5, 5.7 and 5.8**. Each engine requires its own build and acceptance receipts; admission to the matrix alone does not certify compatibility.
 
 The Runtime module owns WebBrowser/CEF views, the unchanged AuroraView Core `call` / `invoke` / result / event bridge, GameThread dispatch and optional authenticated loopback communication. The Editor module adds native docking, inspector and drag/drop integrations. Existing per-view C++ APIs remain available through the Editor facade.
 

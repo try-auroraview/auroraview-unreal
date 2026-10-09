@@ -10,6 +10,7 @@ forcibly stop a user thread.
 import inspect
 import json
 import logging
+import math
 import queue
 import socket
 import threading
@@ -148,6 +149,30 @@ def _tool(method, function):
     return {"name": method, "description": inspect.getdoc(function) or "", "parameters": parameters}
 
 
+class ToolBinding:
+    """Own one explicit native tool registration, without owning the client.
+
+    Closing an older handle never removes a handler that replaced it. Failed
+    native unregistration can be retried by calling close again.
+    """
+
+    def __init__(self, client, method, handler):
+        self._client, self._method, self._handler = client, method, handler
+        self._closed = False
+
+    def close(self):
+        with self._client._binding_lock:
+            if not self._closed:
+                self._client._unbind_owned(self._method, self._handler)
+                self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
 class Client:
     """Connect to an explicitly authorized loopback Unreal host.
 
@@ -172,6 +197,7 @@ class Client:
         self._expected = expected_pid, expected_engine, expected_context
         self._identity = None
         self._lock, self._send_lock = threading.Lock(), threading.Lock()
+        self._binding_lock = threading.RLock()
         self._closed, self._ready = threading.Event(), threading.Event()
         self._failure = None
         self._pending, self._handlers, self._events = {}, {}, {}
@@ -292,32 +318,99 @@ class Client:
         if not isinstance(method, str) or not method or len(method) > 256 or method.startswith(("auroraview.", "unreal.")):
             raise ValueError("Tool names must be nonempty and cannot use reserved auroraview. or unreal. namespaces")
 
-    def _bind(self, functions, allow_rebind):
+    def _bind(self, functions, allow_rebind, descriptors=None, timeout=None):
         for name, function in functions.items():
             self._validate_tool_name(name)
             if not callable(function):
                 raise TypeError("Tool handler must be callable")
-        tools = [_tool(name, function) for name, function in functions.items()]
-        with self._lock:
-            if not allow_rebind and any(name in self._handlers for name in functions):
-                raise ValueError("A tool with this name is already bound")
-            previous = {name: self._handlers.get(name, _ABSENT) for name in functions}
-            self._handlers.update(functions)
-        try:
-            self.call("auroraview.tools.register", {"tools": tools})
-        except Exception:
+        tools = descriptors if descriptors is not None else [_tool(name, function) for name, function in functions.items()]
+        with self._binding_lock:
             with self._lock:
-                for name, function in functions.items():
-                    if self._handlers.get(name) is function:
-                        if previous[name] is _ABSENT:
-                            self._handlers.pop(name, None)
-                        else:
-                            self._handlers[name] = previous[name]
-            raise
+                self._ensure_open()
+                if not allow_rebind and any(name in self._handlers for name in functions):
+                    raise ValueError("A tool with this name is already bound")
+                previous = {name: self._handlers.get(name, _ABSENT) for name in functions}
+                self._handlers.update(functions)
+            try:
+                if timeout is None:
+                    self.call("auroraview.tools.register", {"tools": tools})
+                else:
+                    duration = float(timeout() if callable(timeout) else timeout)
+                    if not math.isfinite(duration) or duration <= 0:
+                        raise ValueError("Registration timeout must be finite and positive")
+                    self.call("auroraview.tools.register", {"tools": tools}, timeout=duration)
+            except Exception:
+                with self._lock:
+                    for name, function in functions.items():
+                        if self._handlers.get(name) is function:
+                            if previous[name] is _ABSENT:
+                                self._handlers.pop(name, None)
+                            else:
+                                self._handlers[name] = previous[name]
+                raise
 
-    def bind_call(self, method, func=None, *, allow_rebind=True):
+    def bind_tool(self, descriptor, handler, *, allow_rebind=False, timeout=None):
+        """Publish an explicit JSON tool contract and return its ownership handle.
+
+        inputSchema/outputSchema/annotations are retained unchanged. parameters
+        mirrors inputSchema for consumers of the original native SDK catalog.
+        Schema validation remains the declared tool handler's responsibility.
+        timeout is a per-registration RPC duration or zero-argument callback
+        returning that duration immediately before dispatch. Callback failures
+        roll back the local handler; omission retains the client default.
+        """
+        if not isinstance(descriptor, dict):
+            raise TypeError("Tool descriptor must be a JSON object")
+        if not callable(handler):
+            raise TypeError("Tool handler must be callable")
+        self._validate_tool_name(descriptor.get("name"))
+        if not isinstance(descriptor.get("description"), str) or not descriptor["description"]:
+            raise ValueError("Tool descriptor requires a nonempty description")
+        if not isinstance(descriptor.get("inputSchema"), dict):
+            raise ValueError("Tool descriptor requires an inputSchema object")
+        if "outputSchema" in descriptor and not isinstance(descriptor["outputSchema"], dict):
+            raise ValueError("Tool outputSchema must be an object")
+        if "annotations" in descriptor:
+            annotations = descriptor["annotations"]
+            if not isinstance(annotations, dict) or any(
+                    key in annotations and type(annotations[key]) is not bool
+                    for key in ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")):
+                raise ValueError("Tool annotation hints must be booleans")
+        if "parameters" in descriptor and descriptor["parameters"] != descriptor["inputSchema"]:
+            raise ValueError("Tool parameters must match inputSchema")
+
+        def check_keys(value):
+            if isinstance(value, dict):
+                if any(not isinstance(key, str) for key in value):
+                    raise ValueError("Tool descriptor object keys must be strings")
+                for child in value.values():
+                    check_keys(child)
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    check_keys(child)
+
+        check_keys(descriptor)
+        contract = json.loads(json.dumps(descriptor, allow_nan=False))
+        contract["parameters"] = contract["inputSchema"]
+
+        # A fresh wrapper gives each handle a distinct ownership identity even
+        # when callers intentionally reuse the same business function.
+        def invoke(*args, **kwargs):
+            return handler(*args, **kwargs)
+
+        self._bind({contract["name"]: invoke}, allow_rebind, [contract], timeout=timeout)
+        return ToolBinding(self, contract["name"], invoke)
+
+    def bind_call(self, method, func=None, *, allow_rebind=True, timeout=None):
+        """Publish a handler directly or as a decorator.
+
+        timeout is a per-registration RPC duration or zero-argument callback
+        evaluated immediately before dispatch, including decorator application.
+        Callback failures roll back the local handler. Omission retains the
+        client default; subsequent calls and cleanup keep their normal timeout.
+        """
         def bind(function):
-            self._bind({method: function}, allow_rebind)
+            self._bind({method: function}, allow_rebind, timeout=timeout)
             return function
         return bind if func is None else bind(func)
 
@@ -333,9 +426,19 @@ class Client:
 
     def unbind_call(self, method):
         self._validate_tool_name(method)
+        with self._binding_lock:
+            self.call("auroraview.tools.unregister", {"names": [method]})
+            with self._lock:
+                self._handlers.pop(method, None)
+
+    def _unbind_owned(self, method, handler):
+        with self._lock:
+            if self._handlers.get(method) is not handler:
+                return
         self.call("auroraview.tools.unregister", {"names": [method]})
         with self._lock:
-            self._handlers.pop(method, None)
+            if self._handlers.get(method) is handler:
+                self._handlers.pop(method, None)
 
     def _acknowledge(self, frame):
         data = frame.get("data")

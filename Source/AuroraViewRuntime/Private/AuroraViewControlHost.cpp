@@ -186,10 +186,18 @@ struct FAuroraViewControlHost::FImpl
         bool bValid = false;
         Address->SetIp(TEXT("127.0.0.1"), bValid);
         Address->SetPort(Port);
-        if (!Listener || !bValid || !Listener->SetNonBlocking(true) || !Listener->Bind(*Address) || !Listener->Listen(MaxClients))
+        const TCHAR* FailureStage = nullptr;
+        if (!Listener) FailureStage = TEXT("create_socket");
+        else if (!bValid) FailureStage = TEXT("loopback_address");
+        else if (!Listener->SetNonBlocking(true)) FailureStage = TEXT("nonblocking");
+        else if (!Listener->Bind(*Address)) FailureStage = TEXT("bind");
+        else if (!Listener->Listen(MaxClients)) FailureStage = TEXT("listen");
+        if (FailureStage)
         {
+            const auto SocketError = Sockets->GetLastErrorCode();
             if (Listener) { Listener->Close(); Sockets->DestroySocket(Listener); Listener = nullptr; }
-            UE_LOG(LogAuroraViewControl, Error, TEXT("AuroraView loopback host could not bind port %d"), Port);
+            UE_LOG(LogAuroraViewControl, Error, TEXT("AuroraView loopback host startup failed: stage=%s port=%d socket_error=%d"),
+                FailureStage, Port, static_cast<int32>(SocketError));
             return;
         }
         UE_LOG(LogAuroraViewControl, Display, TEXT("AuroraView parent IPC v1 ready; pid=%u port=%d context=%s"),
@@ -348,13 +356,21 @@ struct FAuroraViewControlHost::FImpl
                 FString Html, Title, Error;
                 if (!Args->TryGetStringField(TEXT("html"), Html)) { Complete(Failure(TEXT("INVALID_PARAMS"), TEXT("Trusted html is required"))); return; }
                 Args->TryGetStringField(TEXT("title"), Title);
-                const bool bOpened = Module.Open(Id, Html, FText::FromString(Title), Error);
+                FString Presentation = TEXT("floating");
+                if (Args->HasField(TEXT("presentation")) && !Text(Args, TEXT("presentation"), Presentation))
+                { Complete(Failure(TEXT("INVALID_PARAMS"), TEXT("presentation must be floating or docked"))); return; }
+                if (Presentation != TEXT("floating") && Presentation != TEXT("docked"))
+                { Complete(Failure(TEXT("INVALID_PARAMS"), TEXT("presentation must be floating or docked"))); return; }
+                if (Presentation == TEXT("docked") && (!GIsEditor || IsRunningCommandlet()))
+                { Complete(Failure(TEXT("EDITOR_ONLY"), TEXT("Native dock tabs require an interactive Editor host"))); return; }
+                const bool bOpened = Presentation == TEXT("docked")
+                    ? Module.OpenDocked(Id, Html, FText::FromString(Title), Error)
+                    : Module.Open(Id, Html, FText::FromString(Title), Error);
                 Complete(bOpened ? FAuroraViewReply::Success(MakeShared<FJsonValueBoolean>(true)) : Failure(TEXT("VIEW_OPEN_FAILED"), Error)); return;
             }
             if (Method == TEXT("auroraview.view.describe"))
             {
-                auto State = MakeShared<FJsonObject>(); State->SetBoolField(TEXT("ready"), Module.IsReady(Id)); State->SetNumberField(TEXT("generation"), Module.GetGeneration(Id));
-                Complete(FAuroraViewReply::Success(MakeShared<FJsonValueObject>(State))); return;
+                Complete(FAuroraViewReply::Success(MakeShared<FJsonValueObject>(Module.DescribeView(Id)))); return;
             }
             bool bResult = false;
             if (Method == TEXT("auroraview.view.close")) bResult = Module.Close(Id);

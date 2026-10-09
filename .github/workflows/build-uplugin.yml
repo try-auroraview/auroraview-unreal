@@ -93,6 +93,24 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Bundle the runnable offline UE 5.7 demo
+        if: matrix.engine == '5.7'
+        shell: pwsh
+        run: |
+          python scripts/package_demo.py --game-run "$env:BUILD_OUTPUT-Game" --output "$env:BUILD_OUTPUT-Demo"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash -Algorithm SHA256 -LiteralPath "$env:BUILD_OUTPUT-Demo.zip" | ForEach-Object { "$($_.Hash.ToLower())  AuroraView-UE5.7-Win64-Demo.zip" } | Set-Content -LiteralPath "$env:BUILD_OUTPUT-Demo.sha256" -Encoding ascii
+      - name: Retain the runnable offline demo
+        if: matrix.engine == '5.7'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuroraView-Demo-UE5.7-Win64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ env.BUILD_OUTPUT }}-Demo.zip
+            ${{ env.BUILD_OUTPUT }}-Demo.sha256
+          if-no-files-found: error
+          retention-days: 14
+
   fork-boundary:
     name: Fork build instructions
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository

@@ -88,6 +88,53 @@ def verify_inputs(engine, package):
     return receipt_path, receipt, policy
 
 
+DDC_GRAPH = 'AuroraViewValidationDDC'
+DDC_DIRECTORY = 'DerivedDataCache'
+
+
+def configure_project_cache(project, version):
+    """Select only a writable project-owned file cache, without shared overrides."""
+    if version not in preflight_engine.SUPPORTED_VERSIONS:
+        raise build_plugin.BuildError('Unsupported cache configuration version: ' + version)
+    cache = project / DDC_DIRECTORY
+    if version.startswith('4.') and len(str(cache.resolve())) > 119:
+        raise build_plugin.BuildError('UE4 cache paths are limited to 119 characters; use a shorter output directory')
+    local = ('Type=FileSystem,ReadOnly=false,Clean=false,Flush=false,DeleteUnused=false,'
+             'Path="%GAMEDIR%' + DDC_DIRECTORY + '"')
+    if version == '5.8':
+        graph = ('\n[DerivedDataCacheGraphs]\n' + DDC_GRAPH + '=(AuroraViewValidationLocal)\n'
+                 '[DerivedDataCacheStores]\nAuroraViewValidationLocal=(' + local + ')\n')
+        syntax = 'cache_stores'
+    else:
+        graph = ('\n[' + DDC_GRAPH + ']\nRoot=(Type=KeyLength,Length=120,Inner=AsyncPut)\n'
+                 'AsyncPut=(Type=AsyncPut,Inner=Local)\nLocal=(' + local + ',DeleteOnly=false)\n')
+        syntax = 'backend_graph'
+    config = project / 'Config/DefaultEngine.ini'
+    config.write_text(config.read_text(encoding='utf-8') + graph, encoding='utf-8')
+    # UE 5.8 enables the separate cooking ZenStore by default. Keep this
+    # disposable/offline fixture independent of that shared service as well.
+    if version.startswith('5.'):
+        packaging = project / 'Config/DefaultGame.ini'
+        packaging.write_text(packaging.read_text(encoding='utf-8') +
+                             '\n[/Script/UnrealEd.ProjectPackagingSettings]\nbUseZenStore=False\n',
+                             encoding='utf-8')
+    cache.mkdir(parents=True)
+    probe = cache / ('.write-probe-' + secrets.token_hex(8))
+    created = False
+    try:
+        with probe.open('xb') as stream:
+            created = True
+            stream.write(b'AuroraView validation cache')
+        if probe.read_bytes() != b'AuroraView validation cache':
+            raise build_plugin.BuildError('Project cache readback failed')
+    finally:
+        if created:
+            probe.unlink()
+    return dict(graph=DDC_GRAPH, syntax=syntax, directory=str(cache),
+                config_sha256=build_plugin.sha256(config), writable_probe='pass',
+                shared_cache=False, zen=False, zen_store=False)
+
+
 def create_project(root, package, version):
     # Match the installed engine defaults instead of overriding a shared Editor
     # build environment. These target settings do not exist in UE 4.18.
@@ -127,23 +174,13 @@ def create_project(root, package, version):
         + settings +
         f'        ExtraModuleNames.Add("{PROJECT}");\n'
         '    }\n}\n', encoding='utf-8')
-    (source / f'{PROJECT}.Build.cs').write_text(
-        'using UnrealBuildTool;\n'
-        f'public class {PROJECT} : ModuleRules {{\n'
-        f'    public {PROJECT}(ReadOnlyTargetRules Target) : base(Target) {{\n'
-        '        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;\n'
-        '        PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine", "AuroraViewRuntime" });\n'
-        '    }\n}\n', encoding='utf-8')
-    (source / f'{PROJECT}.cpp').write_text(
-        '#include "Modules/ModuleManager.h"\n'
-        f'IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, {PROJECT}, "{PROJECT}");\n', encoding='utf-8')
-    config = root / 'Config'
-    config.mkdir()
-    (config / 'DefaultEngine.ini').write_text(
-        '[/Script/EngineSettings.GameMapsSettings]\n'
-        'GameDefaultMap=/Engine/Maps/Entry\n'
-        '[/Script/Engine.RendererSettings]\n'
-        'r.DefaultFeature.AutoExposure=False\n', encoding='utf-8')
+    # The public demonstration and CI compile the same project-owned scene.
+    # Engine target settings stay generated above because UE4 and UE5 differ.
+    template = ROOT / 'examples' / PROJECT
+    inventory(template)
+    shutil.copytree(template / 'Source' / PROJECT, source, dirs_exist_ok=True)
+    shutil.copytree(template / 'Config', root / 'Config')
+    return configure_project_cache(root, version)
 
 
 def stop_owned(process):
@@ -195,8 +232,8 @@ def game_command(engine, project, archive, policy):
     command = [str(engine / 'Engine/Build/BatchFiles/RunUAT.bat'), 'BuildCookRun',
                '-project=' + str(project), '-target=' + PROJECT, '-noP4', '-platform=Win64',
                '-clientconfig=Development', '-build', '-nocompileeditor', '-cook', '-stage', '-pak', '-package',
-               '-archive', '-archivedirectory=' + str(archive), '-map=/Engine/Maps/Entry',
-               '-unattended', '-utf8output']
+               '-archive', '-prereqs', '-archivedirectory=' + str(archive), '-map=/Engine/Maps/Entry',
+               '-unattended', '-utf8output', '-AdditionalCookerOptions=-ddc=' + DDC_GRAPH]
     if policy['version'] == '4.26':
         command.append('-ubtargs=-2019 -NoHotReloadFromIDE')
     elif not policy['version'].startswith('4.'):
@@ -446,6 +483,7 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
               'execution_mode': execution_mode}
     process = None
     client = None
+    failed = False
     try:
         with console_log.open('wb') as stream:
             startup = subprocess.STARTUPINFO()
@@ -478,6 +516,20 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
             if not isinstance(worlds, list) or not worlds:
                 raise build_plugin.BuildError('Live packaged Game has no world')
             result['actions']['world_list'] = worlds
+            import demo_tools
+            scene = demo_tools.find_scene(client, 'game')
+            if scene is None:
+                raise build_plugin.BuildError('The packaged public demo has no native scene')
+            before = demo_tools.scene_state(client, scene[1])
+            scene_tools = demo_tools.DemoTools(client, scene[1])
+            raised = scene_tools.set_height(150)
+            restored_scene = scene_tools.reset()
+            if (before['height'] != 0 or raised['height'] != 150
+                    or restored_scene['height'] != 0 or raised['revision'] <= before['revision']
+                    or restored_scene['revision'] <= raised['revision']):
+                raise build_plugin.BuildError('Native demo scene mutation/readback/reset failed')
+            result['actions']['demo_scene'] = {'world': scene[0], 'object': scene[1],
+                                              'before': before, 'raised': raised, 'reset': restored_scene}
             reflected = client.call('unreal.object.call', {
                 'object': '/Script/Engine.Default__KismetSystemLibrary', 'function': 'GetEngineVersion', 'args': {}})
             if not reflected.get('return_value', '').startswith(engine_version + '.'):
@@ -561,20 +613,41 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
                 raise build_plugin.BuildError('Game did not exit normally after host shutdown') from error
             if result['exit_code'] != 0:
                 raise build_plugin.BuildError('Game exited with a nonzero code after validation')
+    except Exception as error:
+        failed = True
+        result['error'] = str(error).replace(token, '<redacted>')
+        # A subprocess exception can include the launch command and its token.
+        raise build_plugin.BuildError(result['error']) from None
     finally:
+        cleanup_errors = []
         if client is not None:
-            client.close()
+            try:
+                client.close()
+            except Exception as error:
+                cleanup_errors.append('Client cleanup: ' + str(error).replace(token, '<redacted>'))
         if process is not None:
             result['forced_cleanup'] = process.poll() is None
-            stop_owned(process)
+            try:
+                stop_owned(process)
+            except Exception as error:
+                cleanup_errors.append('Process cleanup: ' + str(error).replace(token, '<redacted>'))
             result['exit_code'] = process.returncode
         # Unreal logs its command line automatically. Never preserve the token.
         for path in [game_log, console_log]:
-            if path.is_file():
-                content = path.read_bytes()
-                path.write_bytes(content.replace(token.encode('utf-8'), b'<redacted>'))
+            try:
+                if path.is_file():
+                    content = path.read_bytes()
+                    path.write_bytes(content.replace(token.encode('utf-8'), b'<redacted>'))
+            except OSError as error:
+                cleanup_errors.append('Log redaction: ' + str(error).replace(token, '<redacted>'))
+        if cleanup_errors:
+            result['cleanup_errors'] = cleanup_errors
+            if not failed:
+                result['error'] = 'Packaged Game cleanup failed: ' + '; '.join(cleanup_errors)
         result['completed_utc'] = now()
         write_json(evidence / 'game-process.json', result)
+        if cleanup_errors and not failed:
+            raise build_plugin.BuildError(result['error']) from None
     return result
 
 
@@ -600,7 +673,8 @@ def validate(engine_root, package_root, output_root, timeout, rendered_browser=F
     try:
         project = output / 'Project'
         project.mkdir()
-        create_project(project, package, policy['version'])
+        cache = create_project(project, package, policy['version'])
+        result['derived_data_cache'] = cache
         verify_package(project / 'Plugins/AuroraView', package_receipt['package']['files_sha256'])
         archive = output / 'PackagedGame'
         command = game_command(engine, project / f'{PROJECT}.uproject', archive, policy)

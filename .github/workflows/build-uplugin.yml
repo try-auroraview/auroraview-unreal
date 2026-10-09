@@ -58,10 +58,10 @@ jobs:
             ${{ env.BUILD_OUTPUT }}/HostProject/Plugins/AuroraView/Binaries/Win64/*.target
           if-no-files-found: error
           retention-days: 14
-      - name: Cook, package and accept the live Game Runtime
+      - name: Cook, package and accept the Development Game Runtime
         shell: pwsh
         run: |
-          python scripts/validate_game.py --engine-root "$env:UE_ROOT" --package "$env:BUILD_OUTPUT/Package" --output "$env:BUILD_OUTPUT-Game" --timeout 2400
+          python scripts/validate_game.py --engine-root "$env:UE_ROOT" --package "$env:BUILD_OUTPUT/Package" --output "$env:BUILD_OUTPUT-Game" --configuration Development --timeout 2400
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain packaged Game acceptance evidence
         if: always()
@@ -79,6 +79,40 @@ jobs:
             ${{ env.BUILD_OUTPUT }}-Game/editor-build.*
             ${{ env.BUILD_OUTPUT }}-Game/ubt-editor.*
             ${{ env.BUILD_OUTPUT }}-Game/uat*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Cook, package and accept the Shipping Game Runtime
+        shell: pwsh
+        run: |
+          python scripts/validate_game.py --engine-root "$env:UE_ROOT" --package "$env:BUILD_OUTPUT/Package" --output "$env:BUILD_OUTPUT-ShippingGame" --configuration Shipping --timeout 2400
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain Shipping Game acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuroraView-ShippingGame-UE${{ matrix.engine }}-Win64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/PackagedGame
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/evidence
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/Project/Binaries/Win64/*.exe
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/Project/Binaries/Win64/*.target
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/Project/Source
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/Project/Config
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/Project/*.uproject
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/editor-build.*
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/ubt-editor.*
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/uat*
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Retain compact Shipping acceptance receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuroraView-Shipping-evidence-UE${{ matrix.engine }}-Win64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ env.BUILD_OUTPUT }}/build-receipt.json
+            ${{ env.BUILD_OUTPUT }}-ShippingGame/evidence
           if-no-files-found: warn
           retention-days: 14
 

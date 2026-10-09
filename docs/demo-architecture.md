@@ -30,6 +30,10 @@ The sample's Game target depends on Runtime. Editor-only modules and embedded Py
 
 The Editor launcher requests `presentation: "docked"` through `auroraview.view.open`, then calls the Editor-only `editor.view.dock` tool to attach it beside the scene in the Level Editor. Runtime owns the native `SDockTab` and browser lifecycle, while Slate owns dragging and layout attachment. This demo attachment uses a temporary document tab; it does not persist a new layout into the user's Editor configuration. `auroraview.view.describe` reports actual native presentation state, the stable registered tab type and its current layout identifier. Game mode uses `presentation: "floating"`; a floating Slate window is a separate presentation from a viewport or UMG embed.
 
+The public [`RegisterDocked` content factory](slate-composition.md) can compose the module-owned browser with caller-owned native Slate widgets in the same tab. The example uses the existing Runtime API; the private native showcase adds its own Editor workspace policy.
+
+The dashboard also provides an opt-in, continuous local canvas workload with 32 or 256 moving marks. It works without Core or Python, pauses while the page is hidden and stops on page close. Its displayed rate counts browser `requestAnimationFrame` callbacks during visible intervals. The separate RPC RTT measures request start to a successful Core response, including Python/tool/native work; failures leave the last successful measurement intact. Neither number measures Unreal/Slate frames or captured/encoded frames. Those rates remain explicitly unmeasured. Use original captured frames and decoded video for actual refresh/content acceptance; source tests and callback counts alone do not establish it.
+
 ## Follow a scene action
 
 1. The dashboard uses AuroraView Core to call the external Python `demo.scene.set_height` tool.

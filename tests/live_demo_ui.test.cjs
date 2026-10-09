@@ -12,7 +12,8 @@ const plain = value => JSON.parse(JSON.stringify(value));
 const flush = async () => { for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve)); };
 
 function setup(options = {}) {
-  const elements = new Map(), windowEvents = {}, subscriptions = {}, calls = [], sends = [], timers = new Map();
+  const elements = new Map(), windowEvents = {}, documentEvents = {}, subscriptions = {}, calls = [], sends = [], timers = new Map(), animationRequests = new Map(), paints = [];
+  let animationId = 0, now = 0;
   let timerId = 0, response = options.response || ((method, params) => {
     if (method === 'demo.status') return status();
     if (method === 'demo.python.multiply') return {value: params.left * params.right, python_version: '3.12.15'};
@@ -29,6 +30,7 @@ function setup(options = {}) {
     removeChild(child) { this.children.splice(this.children.indexOf(child), 1); }
     setAttribute(name, value) { this.attributes[name] = String(value); }
     getAttribute(name) { return this.attributes[name]; }
+    getContext(kind) { assert.equal(kind, '2d'); return options.noCanvas ? null : {fillStyle: '', fillRect(...rect) { paints.push({color: this.fillStyle, rect}); }}; }
     set innerHTML(value) { throw Error('Unsafe HTML write: ' + value); }
   }
   // Parse actual declared IDs and values, so missing or renamed controls fail.
@@ -39,6 +41,8 @@ function setup(options = {}) {
     elements.set(match[3], element);
   }
   const document = {
+    hidden: false,
+    addEventListener(name, handler) { (documentEvents[name] || (documentEvents[name] = [])).push(handler); },
     getElementById(id) { assert.ok(elements.has(id), 'The actual HTML declares #' + id); return elements.get(id); },
     createElement: tag => new Element(tag)
   };
@@ -49,13 +53,20 @@ function setup(options = {}) {
     invoke(method, params) { calls.push({route: 'invoke', method, params: plain(params)}); return response(method, params); },
     send_event(name, detail) { sends.push({name, detail: plain(detail)}); }
   };
-  const win = {addEventListener(name, handler) { (windowEvents[name] || (windowEvents[name] = [])).push(handler); }};
+  const win = {addEventListener(name, handler) { (windowEvents[name] || (windowEvents[name] = [])).push(handler); }, performance: {now: () => now}};
+  if (!options.noRaf) {
+    win.requestAnimationFrame = callback => { const id = ++animationId; animationRequests.set(id, callback); return id; };
+    win.cancelAnimationFrame = id => animationRequests.delete(id);
+  }
   if (options.stub) win.auroraview = {_isStub: true, whenReady() { calls.push({route: 'stub-ready'}); return new Promise(() => {}); }};
   else if (!options.noBridge) win.auroraview = core;
   const context = vm.createContext({window: win, document, console, setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; }, clearTimeout(id) { timers.delete(id); }});
   new vm.Script(script, {filename: 'actual-live_demo.html'}).runInContext(context);
   return {
-    elements, calls, sends, subscriptions, timers, core,
+    elements, calls, sends, subscriptions, timers, core, animationRequests, paints,
+    advance(milliseconds) { now += milliseconds; },
+    frame(timestamp) { assert.equal(animationRequests.size, 1); const [id, callback] = [...animationRequests][0]; animationRequests.delete(id); callback(timestamp); },
+    visibility(hidden) { document.hidden = hidden; for (const handler of documentEvents.visibilitychange || []) handler(); },
     replaceBridge() { win.auroraview = core; },
     setResponse(value) { response = value; },
     async install() { win.auroraview = core; for (const handler of windowEvents.auroraviewready || []) handler(); await flush(); },
@@ -196,4 +207,60 @@ test('the new page is self-contained, uses no remote resources or modern-script 
   assert.doesNotMatch(html, /<(?:script|link)\b[^>]*(?:src|href)=/i);
   assert.doesNotMatch(script, /\b(?:async|await|const|let)\b|=>|\?\.|\.\.\./);
   assert.match(html, /min="0" max="300"/); assert.match(script, /window\.auroraview\.whenReady\(\)/);
+});
+
+test('offline animation is default off and runs a bounded workload without host calls or events', async () => {
+  const h = setup({noBridge: true}); await flush();
+  assert.equal(h.animationRequests.size, 0); assert.equal(h.paints.length, 0);
+  await h.click('animation-light'); h.frame(0); h.frame(1000);
+  assert.equal(h.paints.length, 66, 'one clear and exactly 32 marks per callback');
+  assert.match(h.get('browser-fps').textContent, /^1\.0 · 32 marks/);
+  assert.equal(h.animationRequests.size, 1);
+  await h.click('animation-heavy'); assert.equal(h.animationRequests.size, 1, 'switch replaces the one pending callback');
+  const before = h.paints.length; h.frame(2000);
+  assert.equal(h.paints.length - before, 257);
+  assert.equal(h.calls.length, 0); assert.equal(h.sends.length, 0);
+  assert.equal(h.get('lift-cube').disabled, true);
+  await h.click('animation-off'); assert.equal(h.animationRequests.size, 0);
+  assert.equal(h.get('browser-fps').textContent, 'Not sampled'); h.unload();
+});
+
+test('browser FPS excludes hidden time and restarts its visible sample after mode changes', async () => {
+  const h = setup({noBridge: true}); await h.click('animation-light');
+  h.frame(0); h.frame(500); h.visibility(true);
+  assert.equal(h.animationRequests.size, 0); assert.equal(h.get('animation-state').textContent, 'Paused · page hidden');
+  h.visibility(false); h.frame(10000);
+  assert.equal(h.get('browser-fps').textContent, 'Waiting for a visible 1 s sample');
+  h.frame(10500); h.frame(11000); assert.match(h.get('browser-fps').textContent, /^2\.0 · 32 marks/);
+  await h.click('animation-heavy'); h.frame(12000);
+  assert.equal(h.get('browser-fps').textContent, 'Waiting for a visible 1 s sample');
+  h.frame(13000); assert.match(h.get('browser-fps').textContent, /^1\.0 · 256 marks/);
+  h.unload(); assert.equal(h.animationRequests.size, 0); assert.equal(h.get('animation-light').disabled, true);
+});
+
+test('local animation survives backend disconnect and never schedules a timer fallback', async () => {
+  const h = setup(); await flush(); await h.click('animation-light'); h.frame(0);
+  h.event('backend_error', {message: 'owned provider stopped'}); h.frame(1000);
+  assert.match(h.get('animation-state').textContent, /Running/); assert.equal(h.timers.size, 0);
+  const calls = h.calls.length; await h.click('animation-heavy'); h.frame(2000); assert.equal(h.calls.length, calls);
+  h.unload(); assert.equal(h.animationRequests.size, 0);
+  for (const options of [{noRaf: true}, {noCanvas: true}]) {
+    const unavailable = setup({...options, noBridge: true}); await flush();
+    assert.equal(unavailable.get('animation-light').disabled, true); assert.equal(unavailable.animationRequests.size, 0);
+    assert.match(unavailable.get('animation-state').textContent, /Unavailable/); unavailable.unload();
+  }
+});
+
+test('RTT measures successful Core response time separately from RAF and retains last success on failure', async () => {
+  const h = setup(); await flush(); let complete;
+  h.setResponse(() => new Promise(resolve => { complete = resolve; }));
+  const call = h.click('refresh-status'); await flush(); h.advance(27.5); complete(status()); await call; await flush();
+  assert.equal(h.get('bridge-rtt').textContent, '27.5 ms · demo.status');
+  await h.click('animation-light'); h.frame(0); h.frame(1000);
+  assert.equal(h.get('bridge-rtt').textContent, '27.5 ms · demo.status');
+  h.setResponse(() => Promise.reject(new Error('response failed'))); h.advance(900); await h.click('refresh-status');
+  assert.equal(h.get('bridge-rtt').textContent, '27.5 ms · demo.status');
+  assert.match(h.get('error-banner').textContent, /response failed/);
+  assert.match(html, /UNREAL \/ SLATE FRAME RATE<\/dt><dd>Not measured/);
+  assert.match(html, /CAPTURE FRAME RATE<\/dt><dd>Not measured/); h.unload();
 });

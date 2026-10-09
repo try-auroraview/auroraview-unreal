@@ -353,7 +353,12 @@ def run_ready_loop(process, session_dir, session_seconds, dispatcher=None):
             time.sleep(0.2)
 
 
-def launch(prepared, html, output, session_seconds, shared_tools=False, startup_timeout=900):
+def launch(prepared, html, output, session_seconds, shared_tools=False, startup_timeout=900,
+           validate_tools=False, validation_timeout=30):
+    from tool_validation import validate_timeout as validate_tool_timeout
+    validate_tool_timeout(validation_timeout)
+    if validate_tools and not shared_tools:
+        raise build_plugin.BuildError('--validate-tools requires --shared-tools')
     validate_startup_timeout(startup_timeout)
     if shared_tools:
         demo_tools.require_shared_tools()
@@ -465,6 +470,16 @@ def launch(prepared, html, output, session_seconds, shared_tools=False, startup_
             result['status'] = 'running'
             save(receipt_path, result)
         print('Demo ready: Unreal ' + prepared['engine_version'] + ' ' + mode + ', PID ' + str(process.pid), flush=True)
+        if validate_tools:
+            from tool_validation import validate_tools as validate_shared_tools
+            validation_path = session_dir / 'tool-validation.json'
+            validation = validate_shared_tools(client, tools, dispatcher, validation_path,
+                                               validation_timeout, source=prepared.get('source'))
+            result['tool_validation'] = {'status': validation['status'], 'receipt': str(validation_path),
+                                         'sha256': build_plugin.sha256(validation_path)}
+            save(receipt_path, result)
+            if validation['status'] != 'passed':
+                raise build_plugin.BuildError('Tool validation failed; see ' + str(validation_path))
         print('Use the dashboard: Lift cube / Reset scene / Python call / Python invoke / Send event.', flush=True)
         print('Close the host or press Ctrl+C here to stop. Session evidence: ' + str(receipt_path), flush=True)
         run_ready_loop(process, session_dir, session_seconds, dispatcher)
@@ -543,12 +558,20 @@ def main():
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--shared-tools', action='store_true',
                         help='Use the explicitly installed public auroraview-dcc-mcp 0.1.0 tool contracts')
+    parser.add_argument('--validate-tools', action='store_true',
+                        help='Validate the public borrowed tools and native/event readback after readiness')
+    parser.add_argument('--validation-timeout', type=float, default=30,
+                        help='Cooperative tool validation deadline, 1..300 seconds; native RPC cleanup remains bounded separately')
     parser.add_argument('--timeout', type=int, default=2400)
     parser.add_argument('--startup-timeout', type=int, default=900,
                         help='Native endpoint/scene/view readiness budget, 30..3600 seconds; separate from build timeout')
     parser.add_argument('--session-seconds', type=int, default=0, help='Gracefully stop after N ready seconds; 0 keeps running')
     options = parser.parse_args()
     try:
+        from tool_validation import validate_timeout as validate_tool_timeout
+        validate_tool_timeout(options.validation_timeout)
+        if options.validate_tools and (not options.shared_tools or options.prepare_only):
+            raise build_plugin.BuildError('--validate-tools requires --shared-tools and cannot combine with --prepare-only')
         if os.name != 'nt':
             raise build_plugin.BuildError('The public native demo currently supports Win64 only')
         if options.timeout < 30 or options.session_seconds < 0:
@@ -581,7 +604,8 @@ def main():
         if options.prepare_only:
             print('Demo prepared: ' + str(output), flush=True)
             return 0
-        result = launch(prepared, html, output, options.session_seconds, options.shared_tools, options.startup_timeout)
+        result = launch(prepared, html, output, options.session_seconds, options.shared_tools, options.startup_timeout,
+                        options.validate_tools, options.validation_timeout)
         return 0 if result['status'] == 'closed' else 1
     except (OSError, ValueError, build_plugin.BuildError) as error:
         print('Demo failed: ' + str(error), file=sys.stderr)

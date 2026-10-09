@@ -758,6 +758,8 @@ class GameCleanupTests(unittest.TestCase):
 
             with patch.object(validator.subprocess, 'Popen', return_value=process), \
                     patch.object(validator.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as kill, \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
                     patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}), \
                     patch.object(validator, 'write_json', side_effect=write_receipt):
                 with self.assertRaisesRegex(PermissionError, 'initial process receipt'):
@@ -786,6 +788,8 @@ class GameCleanupTests(unittest.TestCase):
 
             with patch.object(validator.subprocess, 'Popen', return_value=process), \
                     patch.object(validator.subprocess, 'run', return_value=SimpleNamespace(returncode=1)), \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
                     patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}), \
                     patch.object(validator, 'write_json', side_effect=write_receipt):
                 with self.assertRaisesRegex(PermissionError, 'initial process receipt') as caught:

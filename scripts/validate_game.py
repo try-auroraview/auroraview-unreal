@@ -27,6 +27,33 @@ import preflight_engine
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = 'AuroraViewGameFixture'
+GAME_CONFIGURATIONS = ('Development', 'Shipping')
+
+
+def validate_configuration(configuration):
+    if configuration not in GAME_CONFIGURATIONS:
+        raise build_plugin.BuildError('Game configuration must be Development or Shipping')
+    return configuration
+
+
+def executable_names(configuration):
+    validate_configuration(configuration)
+    # The generated fixture uses Unreal's default undecorated Development
+    # configuration; Shipping must identify its own decorated native binary.
+    names = [PROJECT + '-Win64-' + configuration + '.exe']
+    if configuration == 'Development':
+        names.append(PROJECT + '.exe')
+    return names
+
+
+def validate_game_target(target, policy, configuration):
+    validate_configuration(configuration)
+    if (target.get('TargetName') != PROJECT or target.get('Platform') != 'Win64'
+            or target.get('Configuration') != configuration):
+        raise build_plugin.BuildError('Game target receipt differs from the selected ' + configuration + ' Win64 fixture')
+    target_type = target.get('TargetType')
+    if target_type != 'Game' and not (target_type is None and policy['version'] == '4.18'):
+        raise build_plugin.BuildError('Compiled target is not a Game target')
 
 
 def now():
@@ -88,6 +115,53 @@ def verify_inputs(engine, package):
     return receipt_path, receipt, policy
 
 
+DDC_GRAPH = 'AuroraViewValidationDDC'
+DDC_DIRECTORY = 'DerivedDataCache'
+
+
+def configure_project_cache(project, version):
+    """Select only a writable project-owned file cache, without shared overrides."""
+    if version not in preflight_engine.SUPPORTED_VERSIONS:
+        raise build_plugin.BuildError('Unsupported cache configuration version: ' + version)
+    cache = project / DDC_DIRECTORY
+    if version.startswith('4.') and len(str(cache.resolve())) > 119:
+        raise build_plugin.BuildError('UE4 cache paths are limited to 119 characters; use a shorter output directory')
+    local = ('Type=FileSystem,ReadOnly=false,Clean=false,Flush=false,DeleteUnused=false,'
+             'Path="%GAMEDIR%' + DDC_DIRECTORY + '"')
+    if version == '5.8':
+        graph = ('\n[DerivedDataCacheGraphs]\n' + DDC_GRAPH + '=(AuroraViewValidationLocal)\n'
+                 '[DerivedDataCacheStores]\nAuroraViewValidationLocal=(' + local + ')\n')
+        syntax = 'cache_stores'
+    else:
+        graph = ('\n[' + DDC_GRAPH + ']\nRoot=(Type=KeyLength,Length=120,Inner=AsyncPut)\n'
+                 'AsyncPut=(Type=AsyncPut,Inner=Local)\nLocal=(' + local + ',DeleteOnly=false)\n')
+        syntax = 'backend_graph'
+    config = project / 'Config/DefaultEngine.ini'
+    config.write_text(config.read_text(encoding='utf-8') + graph, encoding='utf-8')
+    # UE 5.8 enables the separate cooking ZenStore by default. Keep this
+    # disposable/offline fixture independent of that shared service as well.
+    if version.startswith('5.'):
+        packaging = project / 'Config/DefaultGame.ini'
+        packaging.write_text(packaging.read_text(encoding='utf-8') +
+                             '\n[/Script/UnrealEd.ProjectPackagingSettings]\nbUseZenStore=False\n',
+                             encoding='utf-8')
+    cache.mkdir(parents=True)
+    probe = cache / ('.write-probe-' + secrets.token_hex(8))
+    created = False
+    try:
+        with probe.open('xb') as stream:
+            created = True
+            stream.write(b'AuroraView validation cache')
+        if probe.read_bytes() != b'AuroraView validation cache':
+            raise build_plugin.BuildError('Project cache readback failed')
+    finally:
+        if created:
+            probe.unlink()
+    return dict(graph=DDC_GRAPH, syntax=syntax, directory=str(cache),
+                config_sha256=build_plugin.sha256(config), writable_probe='pass',
+                shared_cache=False, zen=False, zen_store=False)
+
+
 def create_project(root, package, version):
     # Match the installed engine defaults instead of overriding a shared Editor
     # build environment. These target settings do not exist in UE 4.18.
@@ -127,23 +201,13 @@ def create_project(root, package, version):
         + settings +
         f'        ExtraModuleNames.Add("{PROJECT}");\n'
         '    }\n}\n', encoding='utf-8')
-    (source / f'{PROJECT}.Build.cs').write_text(
-        'using UnrealBuildTool;\n'
-        f'public class {PROJECT} : ModuleRules {{\n'
-        f'    public {PROJECT}(ReadOnlyTargetRules Target) : base(Target) {{\n'
-        '        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;\n'
-        '        PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine", "AuroraViewRuntime" });\n'
-        '    }\n}\n', encoding='utf-8')
-    (source / f'{PROJECT}.cpp').write_text(
-        '#include "Modules/ModuleManager.h"\n'
-        f'IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, {PROJECT}, "{PROJECT}");\n', encoding='utf-8')
-    config = root / 'Config'
-    config.mkdir()
-    (config / 'DefaultEngine.ini').write_text(
-        '[/Script/EngineSettings.GameMapsSettings]\n'
-        'GameDefaultMap=/Engine/Maps/Entry\n'
-        '[/Script/Engine.RendererSettings]\n'
-        'r.DefaultFeature.AutoExposure=False\n', encoding='utf-8')
+    # The public demonstration and CI compile the same project-owned scene.
+    # Engine target settings stay generated above because UE4 and UE5 differ.
+    template = ROOT / 'examples' / PROJECT
+    inventory(template)
+    shutil.copytree(template / 'Source' / PROJECT, source, dirs_exist_ok=True)
+    shutil.copytree(template / 'Config', root / 'Config')
+    return configure_project_cache(root, version)
 
 
 def stop_owned(process):
@@ -165,8 +229,8 @@ def run_logged(command, working, log, environment, timeout):
         process = subprocess.Popen(command, cwd=working, env=environment, stdout=stream,
                                    stderr=subprocess.STDOUT, startupinfo=startup)
         process_receipt['pid'] = process.pid
-        write_json(path, process_receipt)
         try:
+            write_json(path, process_receipt)
             process_receipt['exit_code'] = process.wait(timeout=timeout)
             if process.returncode:
                 raise build_plugin.BuildError(f'Native build exited {process.returncode}; see {log}')
@@ -174,9 +238,17 @@ def run_logged(command, working, log, environment, timeout):
             process_receipt['timed_out'] = True
             raise build_plugin.BuildError(f'Native build exceeded {timeout} seconds') from error
         finally:
-            stop_owned(process)
-            process_receipt.update(exit_code=process.returncode, completed_utc=now())
-            write_json(path, process_receipt)
+            primary_error = sys.exc_info()[1]
+            try:
+                try:
+                    stop_owned(process)
+                finally:
+                    process_receipt.update(exit_code=process.returncode, completed_utc=now())
+                    write_json(path, process_receipt)
+            except Exception as cleanup_error:
+                if primary_error is not None:
+                    raise primary_error from cleanup_error
+                raise
 
 
 def editor_command(engine, project, policy, log_file):
@@ -191,12 +263,13 @@ def editor_command(engine, project, policy, log_file):
     return command
 
 
-def game_command(engine, project, archive, policy):
+def game_command(engine, project, archive, policy, configuration='Development'):
+    validate_configuration(configuration)
     command = [str(engine / 'Engine/Build/BatchFiles/RunUAT.bat'), 'BuildCookRun',
                '-project=' + str(project), '-target=' + PROJECT, '-noP4', '-platform=Win64',
-               '-clientconfig=Development', '-build', '-nocompileeditor', '-cook', '-stage', '-pak', '-package',
-               '-archive', '-archivedirectory=' + str(archive), '-map=/Engine/Maps/Entry',
-               '-unattended', '-utf8output']
+               '-clientconfig=' + configuration, '-build', '-nocompileeditor', '-cook', '-stage', '-pak', '-package',
+               '-archive', '-prereqs', '-archivedirectory=' + str(archive), '-map=/Engine/Maps/Entry',
+               '-unattended', '-utf8output', '-AdditionalCookerOptions=-ddc=' + DDC_GRAPH]
     if policy['version'] == '4.26':
         command.append('-ubtargs=-2019 -NoHotReloadFromIDE')
     elif not policy['version'].startswith('4.'):
@@ -219,7 +292,10 @@ def validate_executable(path):
             raise build_plugin.BuildError('Game output is not a Win64 PE32+ executable')
 
 
-def staged_executable_evidence(project, executable, target, policy):
+def staged_executable_evidence(project, executable, target, policy, configuration='Development'):
+    validate_game_target(target, policy, configuration)
+    if executable.name not in executable_names(configuration):
+        raise build_plugin.BuildError('Staged Game executable differs from the selected configuration')
     products = target.get('BuildProducts', [])
     if not isinstance(products, list):
         raise build_plugin.BuildError('Invalid Game target BuildProducts')
@@ -235,7 +311,7 @@ def staged_executable_evidence(project, executable, target, policy):
         raise build_plugin.BuildError('Game executable receipt must identify a project-local file')
     compiled = compiled.resolve()
     if (compiled.parent != (project / 'Binaries/Win64').resolve()
-            or compiled.name not in [PROJECT + '.exe', PROJECT + '-Win64-Development.exe']
+            or compiled.name not in executable_names(configuration)
             or not compiled.is_file()):
         raise build_plugin.BuildError('Game executable receipt escapes the project Game output')
     digest, compiled_digest = build_plugin.sha256(executable), build_plugin.sha256(compiled)
@@ -250,7 +326,8 @@ def staged_executable_evidence(project, executable, target, policy):
         raise build_plugin.BuildError('Staged executable differs from the actual compiled Game: ' + str(error)) from error
 
 
-def stage_evidence(project, archive, engine, package_receipt, policy):
+def stage_evidence(project, archive, engine, package_receipt, policy, configuration='Development'):
+    validate_configuration(configuration)
     files = inventory(archive)
     if not files:
         raise build_plugin.BuildError('BuildCookRun produced no archived Game files')
@@ -259,26 +336,24 @@ def stage_evidence(project, archive, engine, package_receipt, policy):
                 forbidden in Path(name).name.lower() for forbidden in ['auroravieweditor', 'unrealeditor', 'ue4editor']):
             raise build_plugin.BuildError('Editor binary was staged into the Game: ' + name)
     candidates = [archive / name for name in files if '/Binaries/Win64/' in '/' + name
-                  and Path(name).name in [PROJECT + '.exe', PROJECT + '-Win64-Development.exe']]
-    if len(candidates) != 1:
-        raise build_plugin.BuildError('Expected one actual Game executable under Binaries/Win64')
+                  and (Path(name).name == PROJECT + '.exe'
+                       or (Path(name).name.startswith(PROJECT + '-Win64-') and Path(name).suffix == '.exe'))]
+    if len(candidates) != 1 or candidates[0].name not in executable_names(configuration):
+        raise build_plugin.BuildError('Expected one actual ' + configuration + ' Game executable under Binaries/Win64')
     executable = candidates[0]
     validate_executable(executable)
     target_paths = list((project / 'Binaries/Win64').glob('*.target'))
     targets = []
     for path in target_paths:
         target = build_plugin.read_json(path)
-        if (target.get('TargetName') == PROJECT and target.get('Platform') == 'Win64'
-                and target.get('Configuration') == 'Development'):
+        if target.get('TargetName') == PROJECT:
             targets.append((path, target))
     if len(targets) != 1:
-        raise build_plugin.BuildError('Missing unique actual Development Win64 Game target receipt')
+        raise build_plugin.BuildError('Missing unique actual ' + configuration + ' Win64 Game target receipt')
     target_path, target = targets[0]
-    target_type = target.get('TargetType')
-    if target_type != 'Game' and not (target_type is None and policy['version'] == '4.18'):
-        raise build_plugin.BuildError('Compiled target is not a Game target')
+    validate_game_target(target, policy, configuration)
     digest = build_plugin.sha256(executable)
-    executable_identity = staged_executable_evidence(project, executable, target, policy)
+    executable_identity = staged_executable_evidence(project, executable, target, policy, configuration)
     resources = {}
     for relative, expected in package_receipt['source_assets_sha256'].items():
         if not relative.startswith(('Resources/', 'ThirdParty/AuroraViewCore/')):
@@ -313,7 +388,7 @@ def stage_evidence(project, archive, engine, package_receipt, policy):
             or subprocess_matches[0][1] != build_plugin.sha256(installed_subprocess)):
         raise build_plugin.BuildError('Staged CEF subprocess is missing or differs from the installed engine')
     cef.update(subprocess_matches)
-    return executable, {'files_sha256': files, 'runtime_resources_sha256': resources,
+    return executable, {'configuration': configuration, 'files_sha256': files, 'runtime_resources_sha256': resources,
                         'cef_sha256': cef, 'executable_sha256': digest,
                         'executable_identity': executable_identity,
                         'target_receipt': str(target_path), 'target_receipt_sha256': build_plugin.sha256(target_path),
@@ -425,7 +500,14 @@ def game_execution_policy(engine_version, rendered_browser):
     return 'null_rhi', ['-NullRHI']
 
 
-def run_game(executable, evidence, engine_version, timeout, rendered_browser=False):
+def run_game(executable, evidence, engine_version, timeout, rendered_browser=False, *,
+             configuration='Development', expected_sha256=None):
+    validate_configuration(configuration)
+    if executable.name not in executable_names(configuration):
+        raise build_plugin.BuildError('Game process executable differs from the selected configuration')
+    executable_sha256 = build_plugin.sha256(executable)
+    if expected_sha256 is not None and executable_sha256 != expected_sha256:
+        raise build_plugin.BuildError('Game executable changed after staged validation')
     sys.path.insert(0, str(ROOT / 'python'))
     from auroraview_unreal import Client, ProtocolError, RemoteError
     token = secrets.token_urlsafe(32)
@@ -439,13 +521,15 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
                '-AuroraViewHostToken=' + token, '-abslog=' + str(game_log), '-stdout', '-FullStdOutLogOutput']
     execution_mode, graphics_arguments = game_execution_policy(engine_version, rendered_browser)
     command += graphics_arguments
-    result = {'started_utc': now(), 'executable': str(executable),
+    result = {'started_utc': now(), 'executable': str(executable), 'configuration': configuration,
+              'executable_sha256': executable_sha256,
               'arguments': [arg.replace(token, '<redacted>') for arg in command[1:]],
               'actions': {}, 'pid': None, 'exit_code': None, 'forced_cleanup': False,
               'rendered_browser': 'failed' if rendered_browser else 'not_run',
               'execution_mode': execution_mode}
     process = None
     client = None
+    failed = False
     try:
         with console_log.open('wb') as stream:
             startup = subprocess.STARTUPINFO()
@@ -478,6 +562,20 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
             if not isinstance(worlds, list) or not worlds:
                 raise build_plugin.BuildError('Live packaged Game has no world')
             result['actions']['world_list'] = worlds
+            import demo_tools
+            scene = demo_tools.find_scene(client, 'game')
+            if scene is None:
+                raise build_plugin.BuildError('The packaged public demo has no native scene')
+            before = demo_tools.scene_state(client, scene[1])
+            scene_tools = demo_tools.DemoTools(client, scene[1])
+            raised = scene_tools.set_height(150)
+            restored_scene = scene_tools.reset()
+            if (before['height'] != 0 or raised['height'] != 150
+                    or restored_scene['height'] != 0 or raised['revision'] <= before['revision']
+                    or restored_scene['revision'] <= raised['revision']):
+                raise build_plugin.BuildError('Native demo scene mutation/readback/reset failed')
+            result['actions']['demo_scene'] = {'world': scene[0], 'object': scene[1],
+                                              'before': before, 'raised': raised, 'reset': restored_scene}
             reflected = client.call('unreal.object.call', {
                 'object': '/Script/Engine.Default__KismetSystemLibrary', 'function': 'GetEngineVersion', 'args': {}})
             if not reflected.get('return_value', '').startswith(engine_version + '.'):
@@ -561,24 +659,46 @@ def run_game(executable, evidence, engine_version, timeout, rendered_browser=Fal
                 raise build_plugin.BuildError('Game did not exit normally after host shutdown') from error
             if result['exit_code'] != 0:
                 raise build_plugin.BuildError('Game exited with a nonzero code after validation')
+    except Exception as error:
+        failed = True
+        result['error'] = str(error).replace(token, '<redacted>')
+        # A subprocess exception can include the launch command and its token.
+        raise build_plugin.BuildError(result['error']) from None
     finally:
+        cleanup_errors = []
         if client is not None:
-            client.close()
+            try:
+                client.close()
+            except Exception as error:
+                cleanup_errors.append('Client cleanup: ' + str(error).replace(token, '<redacted>'))
         if process is not None:
             result['forced_cleanup'] = process.poll() is None
-            stop_owned(process)
+            try:
+                stop_owned(process)
+            except Exception as error:
+                cleanup_errors.append('Process cleanup: ' + str(error).replace(token, '<redacted>'))
             result['exit_code'] = process.returncode
         # Unreal logs its command line automatically. Never preserve the token.
         for path in [game_log, console_log]:
-            if path.is_file():
-                content = path.read_bytes()
-                path.write_bytes(content.replace(token.encode('utf-8'), b'<redacted>'))
+            try:
+                if path.is_file():
+                    content = path.read_bytes()
+                    path.write_bytes(content.replace(token.encode('utf-8'), b'<redacted>'))
+            except OSError as error:
+                cleanup_errors.append('Log redaction: ' + str(error).replace(token, '<redacted>'))
+        if cleanup_errors:
+            result['cleanup_errors'] = cleanup_errors
+            if not failed:
+                result['error'] = 'Packaged Game cleanup failed: ' + '; '.join(cleanup_errors)
         result['completed_utc'] = now()
         write_json(evidence / 'game-process.json', result)
+        if cleanup_errors and not failed:
+            raise build_plugin.BuildError(result['error']) from None
     return result
 
 
-def validate(engine_root, package_root, output_root, timeout, rendered_browser=False):
+def validate(engine_root, package_root, output_root, timeout, rendered_browser=False, configuration='Development'):
+    validate_configuration(configuration)
     if os.name != 'nt':
         raise build_plugin.BuildError('Packaged Win64 Game validation requires Windows')
     engine, package, output = (Path(value).resolve() for value in [engine_root, package_root, output_root])
@@ -593,6 +713,7 @@ def validate(engine_root, package_root, output_root, timeout, rendered_browser=F
     evidence.mkdir()
     result_path = evidence / 'game-validation.json'
     result = {'schema_version': 1, 'status': 'failed', 'packaged_game': 'not_run', 'started_utc': now(),
+              'configuration': configuration,
               'rendered_browser': 'failed' if rendered_browser else 'not_run',
               'engine': package_receipt['engine'], 'source': package_receipt['source'],
               'build_receipt': str(receipt_path), 'build_receipt_sha256': build_plugin.sha256(receipt_path),
@@ -600,10 +721,11 @@ def validate(engine_root, package_root, output_root, timeout, rendered_browser=F
     try:
         project = output / 'Project'
         project.mkdir()
-        create_project(project, package, policy['version'])
+        cache = create_project(project, package, policy['version'])
+        result['derived_data_cache'] = cache
         verify_package(project / 'Plugins/AuroraView', package_receipt['package']['files_sha256'])
         archive = output / 'PackagedGame'
-        command = game_command(engine, project / f'{PROJECT}.uproject', archive, policy)
+        command = game_command(engine, project / f'{PROJECT}.uproject', archive, policy, configuration)
         overrides = build_plugin.build_environment(policy, output)
         environment = os.environ.copy()
         environment.update(overrides)
@@ -622,9 +744,18 @@ def validate(engine_root, package_root, output_root, timeout, rendered_browser=F
         run_logged(command, project, log, environment, timeout)
         result['uat_log_sha256'] = build_plugin.sha256(log)
         result['compiler_toolchains'] = build_plugin.compiler_evidence(log, policy)
-        executable, stage = stage_evidence(project, archive, engine, package_receipt, policy)
+        executable, stage = stage_evidence(project, archive, engine, package_receipt, policy, configuration)
         result['stage'] = stage
-        result['runtime'] = run_game(executable, evidence, policy['version'], timeout, rendered_browser)
+        if (stage.get('configuration') != configuration
+                or stage.get('target', {}).get('Configuration') != configuration
+                or executable.name not in executable_names(configuration)):
+            raise build_plugin.BuildError('Staged evidence differs from the requested Game configuration')
+        result['runtime'] = run_game(executable, evidence, policy['version'], timeout, rendered_browser,
+                                     configuration=configuration, expected_sha256=stage['executable_sha256'])
+        if (result['runtime'].get('configuration') != configuration
+                or result['runtime'].get('executable') != str(executable)
+                or result['runtime'].get('executable_sha256') != stage['executable_sha256']):
+            raise build_plugin.BuildError('Game process evidence differs from the staged configuration or executable')
         after_stage = inventory(archive)
         if any(after_stage.get(name) != digest for name, digest in stage['files_sha256'].items()):
             raise build_plugin.BuildError('A staged Game input changed during live validation')
@@ -637,7 +768,7 @@ def validate(engine_root, package_root, output_root, timeout, rendered_browser=F
         result['ubt_configuration_after_sha256'] = after_config
         if any(after_config.get(path) != digest for path, digest in before_config.items()):
             raise build_plugin.BuildError('An existing UBT configuration changed during Game validation')
-        scope = 'Cooked Development Win64 Game, native control and external Python tools'
+        scope = 'Cooked ' + configuration + ' Win64 Game, native control and external Python tools'
         if rendered_browser:
             result['rendered_browser'] = 'pass'
             scope += '; rendered CEF Core whenReady/call/invoke, bidirectional browser events and view teardown passed'
@@ -658,17 +789,21 @@ def main():
     parser.add_argument('--package', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--timeout', type=int, default=1800)
+    parser.add_argument('--configuration', choices=GAME_CONFIGURATIONS, default='Development',
+                        help='Cook and run this Game configuration; the Editor cooker stays Development')
     parser.add_argument('--rendered-browser', action='store_true',
                         help='Enable rendering and verify a real CEF Core/Python browser round-trip')
     args = parser.parse_args()
     if args.timeout < 30:
         parser.error('--timeout must be at least 30 seconds')
     try:
-        result = validate(args.engine_root, args.package, args.output, args.timeout, args.rendered_browser)
+        result = validate(args.engine_root, args.package, args.output, args.timeout, args.rendered_browser, args.configuration)
     except (build_plugin.BuildError, OSError, ValueError) as error:
-        print(json.dumps({'status': 'failed', 'packaged_game': 'not_run', 'error': str(error)}))
+        print(json.dumps({'status': 'failed', 'packaged_game': 'not_run',
+                          'configuration': args.configuration, 'error': str(error)}))
         return 1
     print(json.dumps({'status': result['status'], 'packaged_game': result['packaged_game'],
+                      'configuration': result['configuration'],
                       'rendered_browser': result['rendered_browser'],
                       'error': result.get('error'), 'receipt': str(Path(args.output) / 'evidence/game-validation.json')}))
     return 0 if result['status'] == 'passed' else 1

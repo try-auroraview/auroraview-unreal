@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AuroraView · Unreal live studio</title>
+<style>
+:root{--ink:#232824;--paper:#f0eee5;--muted:#a9aea1;--line:#4b5149;--lime:#d0ee7c;--teal:#85d4c4;--danger:#ffb99d}
+*{box-sizing:border-box}body{margin:0;background:var(--ink);color:var(--paper);font:13px "Trebuchet MS",Verdana,sans-serif}button,input{font:inherit}button,input:focus{outline-offset:4px}button:focus,input:focus{outline:2px solid var(--teal)}button{cursor:pointer}button:disabled,input:disabled{cursor:default;opacity:.4}button:hover:not(:disabled){filter:brightness(1.08)}[hidden]{display:none!important}
+.studio{max-width:1100px;margin:0 auto;padding:24px 28px 18px}.masthead{display:flex;justify-content:space-between;align-items:flex-start;border-top:3px solid var(--lime);padding-top:13px}.eyebrow,.mono,.badge,.section-label,.route,.host-label,.activity-time{font-family:Consolas,"Courier New",monospace}.eyebrow{font-size:11px;letter-spacing:2px;color:var(--lime)}h1{font:normal 31px/1.1 Georgia,"Times New Roman",serif;letter-spacing:-.7px;margin:9px 0 12px}h1 em{font-style:normal;color:var(--teal)}.edition{text-align:right;max-width:220px;color:var(--muted);font-size:11px;line-height:1.5}.edition strong{display:block;color:var(--paper);font:normal 18px Georgia,serif;margin-bottom:5px}.badges{display:flex;justify-content:flex-end;margin-bottom:8px}.badge{display:inline-block;font-size:10px;letter-spacing:.3px;padding:5px 7px;border:1px solid var(--line);margin-left:5px;color:var(--muted)}.badge[data-state="ready"]{color:var(--lime);border-color:#6e8451}.badge[data-state="error"]{color:var(--danger);border-color:#a46e58}
+.host-strip{display:flex;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:10px 0;align-items:center}.host-item{margin-right:27px;white-space:nowrap}.host-label{display:block;color:var(--muted);font-size:9px;letter-spacing:1.5px;margin-bottom:4px}.host-value{font:12px Consolas,"Courier New",monospace}.quiet-button{margin-left:auto;background:transparent;color:var(--paper);border:1px solid var(--line);padding:7px 11px;font-size:10px}.route{display:flex;align-items:center;margin:13px 0 15px;color:var(--muted);font-size:10px;line-height:1.5}.route-step{flex:1}.route-step strong{font-weight:normal;color:var(--paper);display:block;font-size:11px}.route-arrow{color:var(--teal);margin:0 15px;font-size:18px}.route-step:last-child{flex:.85}
+.workbench{display:flex}.panel{border:1px solid var(--line);padding:17px;min-width:0}.scene-panel{flex:1.06;background:var(--paper);color:var(--ink);border-color:var(--paper);margin-right:12px}.tools-panel{flex:1}.section-label{font-size:10px;text-transform:uppercase;letter-spacing:1.3px;color:var(--muted)}.scene-panel .section-label{color:#626b5e}h2{font:normal 22px Georgia,serif;letter-spacing:-.3px;margin:7px 0 5px}.description{font-size:11px;line-height:1.5;color:var(--muted);margin:0}.scene-panel .description{color:#626b5e}.scene-reading{display:flex;align-items:baseline;margin:17px 0 4px}.height-value{font:normal 62px/.95 Georgia,serif;letter-spacing:-3px}.height-unit{font:11px Consolas,monospace;margin-left:10px}.revision{margin-left:auto;font:10px Consolas,monospace;color:#626b5e}.range-label{display:flex;justify-content:space-between;font:10px Consolas,monospace;margin:15px 0 7px}.range-label strong{font-weight:normal}input[type="range"]{width:100%;margin:3px 0 0;accent-color:#506931;-webkit-appearance:none;height:4px;background:#b7c1a9;border-radius:0}input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;background:var(--ink);border:3px solid var(--lime);width:17px;height:17px;cursor:ew-resize}.range-ends{display:flex;justify-content:space-between;font:9px Consolas,monospace;color:#6e7867;margin-top:8px}.button-row{display:flex;margin-top:15px}.button{border:1px solid var(--line);padding:10px 12px;background:transparent;color:var(--paper);font-size:11px;min-height:34px}.button+.button{margin-left:8px}.button-primary{background:var(--lime);color:var(--ink);border-color:var(--lime);flex:1}.scene-panel .button-secondary{color:var(--ink);border-color:#b7bcae}.scene-footnote{font:10px/1.45 Consolas,monospace;color:#626b5e;margin:12px 0 0}.tool-heading{display:flex;align-items:center;justify-content:space-between}.tool-heading h2{font-size:19px;margin:5px 0 7px}.tool-tag{color:var(--teal);font:9px Consolas,monospace}.math-row{display:flex;align-items:center;margin-top:11px}.number-input{width:65px;padding:7px 9px;border:1px solid var(--line);background:#30362f;color:var(--paper);font:14px Consolas,monospace}.times{margin:0 10px;color:var(--muted)}.math-result{margin-left:auto;font:normal 29px Georgia,serif;color:var(--teal);max-width:155px;overflow-wrap:break-word}.tool-buttons{display:flex;margin-top:9px}.tool-buttons .button{font-family:Consolas,monospace;font-size:10px;flex:1;padding:7px}.divider{border:0;border-top:1px solid var(--line);margin:15px 0 12px}.event-row{display:flex;margin-top:9px}.message-input{min-width:0;flex:1;padding:8px 9px;border:1px solid var(--line);background:#30362f;color:var(--paper);font-size:11px}.event-row .button{margin-left:7px;padding:7px 10px;color:var(--teal)}.event-result{font:10px/1.5 Consolas,monospace;color:var(--muted);white-space:pre-wrap;overflow-wrap:break-word;margin:8px 0 0;min-height:30px}.event-result[data-state="ready"]{color:var(--teal)}.event-result[data-state="error"]{color:var(--danger)}
+.activity{margin-top:14px;border-top:1px solid var(--line);padding-top:11px}.activity-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}.status-note{color:var(--muted);font:10px Consolas,monospace;max-width:72%;text-align:right}.activity-feed{list-style:none;margin:0;padding:0;height:74px;overflow:auto;font-size:10px;line-height:1.55}.activity-feed li{display:flex;padding:3px 0;border-bottom:1px solid #32392f}.activity-time{color:#899281;min-width:67px}.activity-message{overflow-wrap:break-word}.activity-feed li[data-kind="success"] .activity-message{color:var(--teal)}.activity-feed li[data-kind="error"] .activity-message{color:var(--danger)}.error-banner{margin-top:10px;border-left:3px solid var(--danger);background:#3e3028;color:var(--danger);padding:8px 10px;font:10px/1.5 Consolas,monospace;overflow-wrap:break-word}.footer{display:flex;justify-content:space-between;color:#8d9786;font:9px Consolas,monospace;margin-top:11px}.footer span:last-child{color:var(--teal)}
+.refresh-lab{margin-top:14px;border:1px solid var(--line);padding:12px}.refresh-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.refresh-heading .button{padding:6px 9px;min-height:28px}.refresh-controls{display:flex;gap:6px}.refresh-canvas{display:block;width:100%;height:84px;margin:10px 0;background:#19231f}.refresh-metrics{display:flex;flex-wrap:wrap;gap:10px 24px;font:10px/1.5 Consolas,monospace}.refresh-metrics dt{color:var(--muted)}.refresh-metrics dd{margin:0;color:var(--teal)}.refresh-note{font-size:10px;color:var(--muted);margin:7px 0 0}
+@media(min-width:701px) and (max-height:760px){.studio{padding:16px 24px 12px}.masthead{padding-top:9px}.eyebrow{font-size:10px}h1{font-size:27px;margin:7px 0 9px}.edition strong{font-size:16px;margin-bottom:4px}.host-strip{padding:8px 0}.route{font-size:9px;line-height:1.4;margin:10px 0}.route-step strong{font-size:10px}.panel{padding:14px}.scene-panel .description,.scene-footnote,.tools-panel>.description{display:none}h2{font-size:21px;margin:6px 0 5px}.scene-reading{margin:11px 0 3px}.height-value{font-size:48px}.range-label{margin:10px 0 5px}.range-ends{margin-top:6px}.button-row{margin-top:12px}.tool-heading h2{font-size:17px;margin:5px 0}.math-row{margin-top:8px}.number-input{padding:6px 8px}.math-result{font-size:26px}.tool-buttons{margin-top:8px}.tool-buttons .button{padding:6px}.divider{margin:11px 0 10px}.event-row{margin-top:8px}.message-input{padding:7px 9px}.event-result{font-size:9px;line-height:1.45;margin-top:7px;min-height:0;height:43px;overflow:auto}.activity{margin-top:11px;padding-top:9px}.activity-feed{height:40px}.footer{font-size:8px;margin-top:8px}}
+@media(max-width:700px){.studio{padding:18px}.edition{max-width:165px}h1{font-size:26px}.host-item{margin-right:14px}.host-strip{flex-wrap:wrap}.host-item{margin-bottom:7px}.route-arrow{margin:0 7px}.route{font-size:9px}.route-step strong{font-size:10px}.workbench{display:block}.scene-panel{margin:0 0 12px}.height-value{font-size:51px}.activity-feed{height:100px}.status-note{max-width:65%}}
+@media(prefers-reduced-motion:no-preference){.masthead,.host-strip,.workbench,.activity{animation:arrive .45s ease both}.host-strip{animation-delay:.06s}.workbench{animation-delay:.12s}.activity{animation-delay:.18s}@keyframes arrive{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}}
+</style>
+</head>
+<body>
+<main class="studio">
+  <header class="masthead">
+    <div><div class="eyebrow">AURORAVIEW / UNREAL</div><h1>A web panel. <em>A real Unreal scene.</em></h1></div>
+    <div class="edition"><div class="badges"><span id="bridge-badge" class="badge" data-state="waiting">BRIDGE · WAITING</span><span id="python-badge" class="badge" data-state="waiting">PYTHON · WAITING</span></div><strong>Live studio / 01</strong>Move the scene. Run a Python tool.<br>Watch the round trip come back.</div>
+  </header>
+  <section class="host-strip" aria-label="Connected Unreal host">
+    <div class="host-item"><span class="host-label">UNREAL ENGINE</span><span id="engine-version" class="host-value">Awaiting host</span></div>
+    <div class="host-item"><span class="host-label">CONTEXT</span><span id="host-context" class="host-value">—</span></div>
+    <div class="host-item"><span class="host-label">PROCESS</span><span id="host-pid" class="host-value">—</span></div>
+    <div class="host-item"><span class="host-label">EXTERNAL PYTHON</span><span id="python-version" class="host-value">—</span></div>
+    <button id="refresh-status" class="quiet-button" type="button" disabled>Refresh host</button>
+  </section>
+  <div class="route" aria-label="Live communication route"><div class="route-step"><strong>01 / WEB PANEL</strong>You choose an action</div><span class="route-arrow" aria-hidden="true">→</span><div class="route-step"><strong>02 / UNREAL</strong>AuroraView delivers it</div><span class="route-arrow" aria-hidden="true">→</span><div class="route-step"><strong>03 / PYTHON TOOL</strong>Your script does the work</div><span class="route-arrow" aria-hidden="true">→</span><div class="route-step"><strong>04 / NATIVE SCENE</strong>Unreal sends the result</div></div>
+  <div class="workbench">
+    <section class="panel scene-panel" aria-labelledby="scene-title">
+      <div class="section-label">01 / Native scene control</div><h2 id="scene-title">Give the cube a lift.</h2><p class="description">The cube moves in the Unreal viewport.<br>This reading comes back from the scene.</p>
+      <div class="scene-reading"><output id="height-current" class="height-value" aria-live="polite">—</output><span class="height-unit">cm / Z</span><span class="revision">REV <span id="scene-revision">—</span></span></div>
+      <label class="range-label" for="height-range">TARGET HEIGHT <strong><output id="height-target" for="height-range">150</output> cm</strong></label>
+      <input id="height-range" type="range" min="0" max="300" step="10" value="150" disabled><div class="range-ends"><span>0 cm</span><span>300 cm</span></div>
+      <div class="button-row"><button id="lift-cube" class="button button-primary" type="button" disabled>Lift cube ↗</button><button id="reset-scene" class="button button-secondary" type="button" disabled>Reset scene</button></div>
+      <p class="scene-footnote">Panel → Python → native actor.<br>Scene updates return here as events.</p>
+    </section>
+    <section class="panel tools-panel" aria-label="Python tools and bidirectional events">
+      <div class="section-label">02 / External Python tool</div><div class="tool-heading"><h2>Small script. Real answer.</h2><span class="tool-tag">MULTIPLY</span></div>
+      <p class="description">Run the same tool through either AuroraView API.</p>
+      <div class="math-row"><label for="multiply-left" class="host-label" hidden>Left operand</label><input id="multiply-left" class="number-input" type="number" value="6" step="any" disabled aria-label="Left operand"><span class="times">×</span><label for="multiply-right" class="host-label" hidden>Right operand</label><input id="multiply-right" class="number-input" type="number" value="7" step="any" disabled aria-label="Right operand"><output id="multiply-result" class="math-result" aria-live="polite">—</output></div>
+      <div class="tool-buttons"><button id="multiply-call" class="button" type="button" disabled>Run with call()</button><button id="multiply-invoke" class="button" type="button" disabled>Run with invoke()</button></div>
+      <hr class="divider"><div class="tool-heading"><div class="section-label">03 / Bidirectional event</div><span id="event-state" class="tool-tag">NO REPLY YET</span></div>
+      <div class="event-row"><input id="event-message" class="message-input" value="Hello from Unreal" maxlength="120" aria-label="Event message" disabled><button id="event-send" class="button" type="button" disabled>Send ↗</button></div>
+      <pre id="event-result" class="event-result" aria-live="polite">A matching Python reply is required.
+The payload includes false and 0.</pre>
+    </section>
+  </div>
+  <section class="refresh-lab" aria-label="Offline browser refresh workload">
+    <div class="refresh-heading"><div><div class="section-label">04 / Browser refresh workload</div><span id="animation-state" role="status">Off · no local animation</span></div><div class="refresh-controls"><button id="animation-light" class="button" type="button">Run 32 marks</button><button id="animation-heavy" class="button" type="button">Run 256 marks</button><button id="animation-off" class="button" type="button">Stop</button></div></div>
+    <canvas id="refresh-canvas" class="refresh-canvas" width="768" height="96" aria-label="Local moving color marks"></canvas>
+    <dl class="refresh-metrics"><div><dt>BROWSER RAF CALLBACKS / SECOND</dt><dd id="browser-fps">Not sampled</dd></div><div><dt>LAST SUCCESSFUL CORE RPC RTT</dt><dd id="bridge-rtt">Not sampled</dd></div><div><dt>UNREAL / SLATE FRAME RATE</dt><dd>Not measured</dd></div><div><dt>CAPTURE FRAME RATE</dt><dd>Not measured</dd></div></dl>
+    <p class="refresh-note">Local canvas only; works offline and changes no Unreal scene state. Hidden pages pause. Browser callback rate is not a rendered-frame or capture measurement. RPC timing includes the tool and native readback.</p>
+  </section>
+  <div id="error-banner" class="error-banner" role="alert" hidden></div>
+  <section class="activity" aria-label="Actual host activity"><div class="activity-heading"><div class="section-label">Activity / actual responses</div><div id="status-note" class="status-note" role="status">Waiting for AuroraView Core and the Python demo.</div></div><ol id="activity-feed" class="activity-feed" aria-live="polite"></ol></section>
+  <footer class="footer"><span>HTML UI · AURORAVIEW CORE · UNREAL HOST</span><span>Editor + packaged Game</span></footer>
+</main>
+<script>
+(function () {
+  'use strict';
+  var core = null, connecting = false, connected = false, ready = false, busy = false;
+  var pendingEvent = null, eventSequence = 0, emittedReady = false, closed = false, readyRetry = null;
+  var animationCount = 0, animationRequest = null, animationStart = null, animationFrames = 0, animationTicks = 0;
+  var animationCanvas = document.getElementById('refresh-canvas'), animationContext = animationCanvas.getContext('2d');
+  var unsubscribers = [], ids = ['height-range', 'lift-cube', 'reset-scene', 'multiply-left', 'multiply-right', 'multiply-call', 'multiply-invoke', 'event-message', 'event-send'];
+  function element(id) { return document.getElementById(id); }
+  function text(id, value) { element(id).textContent = String(value); }
+  function badge(id, value, state) { text(id, value); element(id).setAttribute('data-state', state); }
+  function controls() {
+    ids.forEach(function (id) { element(id).disabled = !ready || busy; });
+    element('event-send').disabled = !ready || busy || pendingEvent !== null;
+    element('refresh-status').disabled = !connected || busy;
+  }
+  function activity(message, kind) {
+    var row = document.createElement('li'), stamp = document.createElement('span'), body = document.createElement('span');
+    row.setAttribute('data-kind', kind || 'info'); stamp.className = 'activity-time'; body.className = 'activity-message';
+    stamp.textContent = new Date().toTimeString().slice(0, 8); body.textContent = message;
+    row.appendChild(stamp); row.appendChild(body);
+    var feed = element('activity-feed'); feed.insertBefore(row, feed.firstChild);
+    while (feed.children.length > 12) feed.removeChild(feed.lastChild);
+  }
+  function messageOf(error) { return (error && error.code ? error.code + ': ' : '') + (error && error.message ? error.message : String(error)); }
+  function failure(action, error) {
+    var message = action + ' — ' + messageOf(error);
+    element('error-banner').hidden = false; text('error-banner', 'Last failure: ' + message);
+    text('status-note', 'Action failed. Details remain visible below.'); activity(message, 'error');
+  }
+  function finiteNumber(value) { return typeof value === 'number' && isFinite(value); }
+  function clock() { return window.performance && typeof window.performance.now === 'function' ? window.performance.now() : Date.now(); }
+  function request(method, params, invoke) {
+    var started = clock();
+    return Promise.resolve().then(function () { return invoke ? core.invoke(method, params) : core.call(method, params); }).then(function (result) {
+      var elapsed = clock() - started;
+      if (finiteNumber(elapsed) && elapsed >= 0) text('bridge-rtt', elapsed.toFixed(1) + ' ms · ' + method);
+      return result;
+    });
+  }
+  function cancelAnimation() {
+    if (animationRequest !== null) { window.cancelAnimationFrame(animationRequest); animationRequest = null; }
+    animationStart = null; animationFrames = 0;
+  }
+  function animationFrame(timestamp) {
+    animationRequest = null;
+    if (closed || !animationCount || document.hidden) return;
+    if (!finiteNumber(timestamp)) { setAnimation(0); text('animation-state', 'Unavailable · invalid browser clock'); return; }
+    animationTicks++;
+    animationContext.fillStyle = '#19231f'; animationContext.fillRect(0, 0, 768, 96);
+    for (var index = 0; index < animationCount; index++) {
+      animationContext.fillStyle = index % 2 ? '#d0ee7c' : '#85d4c4';
+      animationContext.fillRect((timestamp / 6 + index * 37) % 768, (index * 13) % 88, 12, 8);
+    }
+    if (animationStart === null || timestamp < animationStart) { animationStart = timestamp; animationFrames = 0; }
+    else {
+      animationFrames++;
+      var elapsed = timestamp - animationStart;
+      if (elapsed >= 1000) {
+        text('browser-fps', (animationFrames * 1000 / elapsed).toFixed(1) + ' · ' + animationCount + ' marks · callback ' + animationTicks);
+        animationStart = timestamp; animationFrames = 0;
+      }
+    }
+    animationRequest = window.requestAnimationFrame(animationFrame);
+  }
+  function resumeAnimation() {
+    if (closed || !animationCount || document.hidden || animationRequest !== null) return;
+    text('animation-state', 'Running · ' + animationCount + ' local marks');
+    animationRequest = window.requestAnimationFrame(animationFrame);
+  }
+  function setAnimation(count) {
+    cancelAnimation(); animationCount = count;
+    text('browser-fps', count ? 'Waiting for a visible 1 s sample' : 'Not sampled');
+    text('animation-state', count ? (document.hidden ? 'Paused · page hidden' : 'Starting local animation') : 'Off · no local animation');
+    resumeAnimation();
+  }
+  function validateScene(scene) {
+    if (!scene || !finiteNumber(scene.height) || scene.height < 0 || scene.height > 300 || !finiteNumber(scene.revision) || scene.revision < 0 || Math.floor(scene.revision) !== scene.revision) throw new Error('Invalid native scene response');
+    return scene;
+  }
+  function renderScene(scene) {
+    validateScene(scene); text('height-current', scene.height); text('scene-revision', scene.revision);
+  }
+  function renderStatus(status) {
+    if (!status || typeof status.engine_version !== 'string' || !status.engine_version || !finiteNumber(status.pid) || status.pid <= 0 || Math.floor(status.pid) !== status.pid || typeof status.context !== 'string' || !status.context || typeof status.python_version !== 'string' || !status.python_version) throw new Error('Incomplete Unreal / Python status response');
+    renderScene(status.scene); text('engine-version', status.engine_version); text('host-context', status.context); text('host-pid', status.pid); text('python-version', status.python_version);
+    ready = true; badge('python-badge', 'PYTHON · READY', 'ready'); text('status-note', 'Connected to the actual Unreal scene. Choose an action.');
+  }
+  function evidence(action, result) { core.send_event('demo:browser.result', {action: action, result: result}); }
+  function run(action, method, params, accept, invoke) {
+    if (!ready || busy) return;
+    busy = true; controls();
+    request(method, params, invoke).then(function (result) {
+      accept(result); evidence(action, result); activity(action + ' → ' + JSON.stringify(result), 'success');
+      text('status-note', 'Actual response received from the Python demo.');
+    }).catch(function (error) { failure(action, error); }).then(function () { busy = false; controls(); });
+  }
+  function refresh() {
+    if (!connected || busy) return;
+    busy = true; controls();
+    request('demo.status', {}, false).then(function (status) {
+      renderStatus(status); activity('Unreal ' + status.engine_version + ' / ' + status.context + ' / PID ' + status.pid + ' / Python ' + status.python_version, 'success');
+      if (!emittedReady) { core.send_event('demo:browser.ready', status); emittedReady = true; }
+    }).catch(function (error) {
+      ready = false; badge('python-badge', 'PYTHON · ERROR', 'error'); failure('demo.status', error);
+    }).then(function () { busy = false; controls(); });
+  }
+  function eventReply(reply) {
+    if (!pendingEvent || !reply || reply.nonce !== pendingEvent.nonce) { activity('Event reply ignored: no matching pending nonce.'); return; }
+    if (reply.source !== 'python' || reply.message !== pendingEvent.message || reply.false_value !== false || reply.zero !== 0) {
+      clearTimeout(pendingEvent.timer); pendingEvent = null;
+      text('event-state', 'INVALID REPLY'); element('event-result').setAttribute('data-state', 'error'); text('event-result', JSON.stringify(reply));
+      failure('demo:event.reply', new Error('Reply did not preserve source, message, false and 0')); controls(); return;
+    }
+    clearTimeout(pendingEvent.timer); pendingEvent = null;
+    text('event-state', 'PYTHON REPLIED'); element('event-result').setAttribute('data-state', 'ready');
+    text('event-result', JSON.stringify(reply)); evidence('demo:event.reply', reply);
+    activity('Python event reply matched nonce; false and 0 preserved.', 'success'); text('status-note', 'Bidirectional event round trip confirmed.'); controls();
+  }
+  function subscribe(name, handler) { var unsubscribe = core.on(name, handler); if (typeof unsubscribe === 'function') unsubscribers.push(unsubscribe); }
+  function start() {
+    if (readyRetry !== null) { clearTimeout(readyRetry); readyRetry = null; }
+    if (closed || connecting || connected) return;
+    // Core replaces its startup stub. Waiting on that discarded stub can leave
+    // its Promise unresolved, so call whenReady only on the installed Core.
+    if (!window.auroraview || window.auroraview._isStub || typeof window.auroraview.whenReady !== 'function') { readyRetry = setTimeout(start, 10); return; }
+    connecting = true;
+    Promise.resolve().then(function () { return window.auroraview.whenReady(); }).then(function (installed) {
+      if (closed) return;
+      core = installed || window.auroraview;
+      if (!core || typeof core.call !== 'function' || typeof core.invoke !== 'function' || typeof core.on !== 'function' || typeof core.send_event !== 'function') throw new Error('Required AuroraView Core APIs are unavailable');
+      connected = true; connecting = false; badge('bridge-badge', 'BRIDGE · READY', 'ready');
+      subscribe('demo:event.reply', eventReply);
+      subscribe('demo:scene', function (scene) { try { renderScene(scene); activity('Native scene event → height ' + scene.height + ' cm / revision ' + scene.revision, 'success'); } catch (error) { failure('demo:scene', error); } });
+      subscribe('backend_error', function (error) {
+        ready = false; connected = false; badge('bridge-badge', 'BRIDGE · ERROR', 'error'); badge('python-badge', 'PYTHON · UNKNOWN', 'error');
+        if (pendingEvent) { clearTimeout(pendingEvent.timer); pendingEvent = null; text('event-state', 'DISCONNECTED'); }
+        failure('Unreal connection', error); controls();
+      });
+      refresh();
+    }).catch(function (error) { connecting = false; ready = false; badge('bridge-badge', 'BRIDGE · ERROR', 'error'); failure('AuroraView ready', error); controls(); });
+  }
+  element('height-range').oninput = function () { text('height-target', this.value); };
+  element('lift-cube').onclick = function () {
+    var height = Number(element('height-range').value);
+    if (!finiteNumber(height) || height < 0 || height > 300) { failure('demo.scene.set_height', new Error('Height must be between 0 and 300 cm')); return; }
+    run('demo.scene.set_height', 'demo.scene.set_height', {height: height}, renderScene, false);
+  };
+  element('reset-scene').onclick = function () { run('demo.scene.reset', 'demo.scene.reset', {}, renderScene, false); };
+  function multiply(invoke) {
+    var leftText = element('multiply-left').value, rightText = element('multiply-right').value;
+    var left = Number(leftText), right = Number(rightText);
+    if (!leftText.trim() || !rightText.trim() || !finiteNumber(left) || !finiteNumber(right)) { failure('Python multiply', new Error('Enter two finite numbers')); return; }
+    run('demo.python.multiply.' + (invoke ? 'invoke' : 'call'), 'demo.python.multiply', {left: left, right: right}, function (result) {
+      if (!result || !finiteNumber(result.value) || typeof result.python_version !== 'string' || !result.python_version) throw new Error('Invalid Python multiplication response');
+      text('multiply-result', '= ' + result.value); text('python-version', result.python_version);
+    }, invoke);
+  }
+  element('multiply-call').onclick = function () { multiply(false); };
+  element('multiply-invoke').onclick = function () { multiply(true); };
+  element('event-send').onclick = function () {
+    if (!ready || busy || pendingEvent) return;
+    var nonce = 'browser-' + Date.now() + '-' + (++eventSequence), message = element('event-message').value;
+    pendingEvent = {nonce: nonce, message: message, timer: null};
+    text('event-state', 'AWAITING PYTHON'); element('event-result').setAttribute('data-state', 'waiting'); text('event-result', 'Sent nonce ' + nonce + '\nWaiting for the matching reply…');
+    pendingEvent.timer = setTimeout(function () {
+      pendingEvent = null; text('event-state', 'NO REPLY'); element('event-result').setAttribute('data-state', 'error');
+      text('event-result', 'No matching Python reply arrived within 8 seconds.'); failure('demo:event.reply', new Error('Event acknowledgement timed out')); controls();
+    }, 8000);
+    try { core.send_event('demo:event.request', {nonce: nonce, message: message, false_value: false, zero: 0}); activity('Browser event sent; awaiting Python acknowledgement.'); }
+    catch (error) { clearTimeout(pendingEvent.timer); pendingEvent = null; text('event-state', 'SEND FAILED'); failure('demo:event.request', error); }
+    controls();
+  };
+  element('refresh-status').onclick = refresh;
+  var animationAvailable = animationContext && typeof window.requestAnimationFrame === 'function' && typeof window.cancelAnimationFrame === 'function';
+  element('animation-light').disabled = !animationAvailable; element('animation-heavy').disabled = !animationAvailable;
+  element('animation-light').onclick = function () { if (animationAvailable && !closed) setAnimation(32); };
+  element('animation-heavy').onclick = function () { if (animationAvailable && !closed) setAnimation(256); };
+  element('animation-off').onclick = function () { setAnimation(0); };
+  if (!animationAvailable) text('animation-state', 'Unavailable · browser canvas / RAF required');
+  document.addEventListener('visibilitychange', function () {
+    cancelAnimation();
+    if (animationCount) { text('browser-fps', 'Waiting for a visible 1 s sample'); text('animation-state', document.hidden ? 'Paused · page hidden' : 'Resuming local animation'); resumeAnimation(); }
+  });
+  window.addEventListener('auroraviewready', start);
+  window.addEventListener('beforeunload', function () {
+    closed = true; ready = false; if (pendingEvent) clearTimeout(pendingEvent.timer);
+    setAnimation(0); element('animation-light').disabled = true; element('animation-heavy').disabled = true; element('animation-off').disabled = true;
+    if (readyRetry !== null) { clearTimeout(readyRetry); readyRetry = null; }
+    unsubscribers.forEach(function (unsubscribe) { unsubscribe(); }); controls();
+  });
+  activity('Page opened. Waiting for the real bridge and demo.status.'); controls(); start();
+})();
+</script>
+</body>
+</html>

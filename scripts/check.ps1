@@ -18,7 +18,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 function Resolve-Executable([string]$Name) {
     $command = Get-Command -Name $Name -CommandType Application -ErrorAction Stop
-    return $command.Source
+    return @($command)[0].Source
 }
 
 function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
@@ -46,6 +46,10 @@ try {
         'tests/build_plugin_test.py',
         'tests/validate_game_test.py',
         'tests/python_client_test.py',
+        'tests/demo_tools_test.py',
+        'tests/owner_dispatch_test.py',
+        'tests/run_demo_test.py',
+        'tests/package_demo_test.py',
         'tests/native_evidence_test.py',
         'tests/native_showcase_source_test.py'
     )) {
@@ -64,7 +68,8 @@ try {
     }
     Invoke-Checked $nodeExe @(
         '--test', (Join-Path $root 'tests/bridge.test.cjs'),
-        (Join-Path $root 'tests/native_showcase_ui.test.cjs')
+        (Join-Path $root 'tests/native_showcase_ui.test.cjs'),
+        (Join-Path $root 'tests/live_demo_ui.test.cjs')
     )
     Invoke-Checked $pythonExe @((Join-Path $root 'scripts/preflight_engine.py'))
 }

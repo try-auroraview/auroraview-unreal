@@ -1,5 +1,6 @@
 """Packaged Game validation guards; synthetic files only, never native evidence."""
 import importlib.util
+import configparser
 import json
 from pathlib import Path
 import struct
@@ -7,6 +8,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -112,8 +114,70 @@ class PackagedGameGuards(unittest.TestCase):
         for directory in [self.archive / 'Windows', self.engine]:
             write(directory / 'Engine/Binaries/Win64/EpicWebHelper.exe', 'synthetic CEF subprocess')
 
-    def stage(self):
-        return validator.stage_evidence(self.project, self.archive, self.engine, self.receipt, self.policy)
+    def stage(self, configuration='Development'):
+        return validator.stage_evidence(self.project, self.archive, self.engine, self.receipt, self.policy, configuration)
+
+    def shipping_fixture(self):
+        self.game.unlink()
+        compiled = self.project / f'Binaries/Win64/{validator.PROJECT}.exe'
+        compiled.unlink()
+        self.game = self.game.with_name(validator.PROJECT + '-Win64-Shipping.exe')
+        compiled = compiled.with_name(self.game.name)
+        write(self.game, executable())
+        write(compiled, executable())
+        target = self.project / f'Binaries/Win64/{validator.PROJECT}.target'
+        data = json.loads(target.read_text())
+        data.update(Configuration='Shipping', BuildProducts=[{'Type': 'Executable', 'Path': str(compiled)}])
+        write(target, json.dumps(data))
+        return target
+
+    def test_shipping_stage_binds_its_own_receipt_and_executable(self):
+        self.shipping_fixture()
+        game, evidence = self.stage('Shipping')
+        self.assertEqual(game, self.game)
+        self.assertEqual(evidence['configuration'], 'Shipping')
+        self.assertEqual(evidence['target']['Configuration'], 'Shipping')
+        self.assertEqual(evidence['executable_identity']['staged_sha256'], validator.build_plugin.sha256(game))
+        with self.assertRaises(validator.build_plugin.BuildError):
+            self.stage('Development')
+
+    def test_development_cannot_satisfy_shipping_and_mixed_stage_is_rejected(self):
+        with self.assertRaises(validator.build_plugin.BuildError):
+            self.stage('Shipping')
+        self.shipping_fixture()
+        write(self.game.with_name(validator.PROJECT + '.exe'), executable())
+        with self.assertRaisesRegex(validator.build_plugin.BuildError, 'Expected one actual Shipping'):
+            self.stage('Shipping')
+
+    def test_shipping_rejects_wrong_or_multiple_target_receipts(self):
+        target = self.shipping_fixture()
+        original = json.loads(target.read_text())
+        for field, value in [('Configuration', 'Development'), ('TargetName', 'OtherGame'),
+                             ('Platform', 'Linux'), ('TargetType', 'Editor')]:
+            with self.subTest(field=field):
+                write(target, json.dumps(dict(original, **{field: value})))
+                with self.assertRaises(validator.build_plugin.BuildError):
+                    self.stage('Shipping')
+        write(target, json.dumps(original))
+        for configuration in ['Development', 'Shipping']:
+            with self.subTest(extra_receipt=configuration):
+                extra = target.with_name('Other.target')
+                write(extra, json.dumps(dict(original, Configuration=configuration)))
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, 'unique actual Shipping'):
+                    self.stage('Shipping')
+                extra.unlink()
+
+    def test_shipping_receipt_cannot_point_at_development_or_outside_product(self):
+        target = self.shipping_fixture()
+        original = json.loads(target.read_text())
+        for compiled in [self.project / f'Binaries/Win64/{validator.PROJECT}.exe',
+                         self.root / 'Outside' / self.game.name]:
+            with self.subTest(compiled=compiled):
+                write(compiled, executable())
+                data = dict(original, BuildProducts=[{'Type': 'Executable', 'Path': str(compiled)}])
+                write(target, json.dumps(data))
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, 'escapes the project Game output'):
+                    self.stage('Shipping')
 
     def test_stage_binds_actual_executable_resources_and_cef(self):
         game, evidence = self.stage()
@@ -201,17 +265,22 @@ class PackagedGameGuards(unittest.TestCase):
     def test_buildcookrun_uses_explicit_game_and_legacy_toolchain(self):
         for version in preflight_versions():
             policy = validator.preflight_engine.engine_policy(version)
-            command = validator.game_command(self.engine, self.project / 'Fixture.uproject', self.archive, policy)
-            self.assertIn('-target=' + validator.PROJECT, command)
-            self.assertIn('-clientconfig=Development', command)
-            self.assertIn('-cook', command)
-            self.assertNotIn('-skipbuildeditor', command)
-            self.assertIn('-nocompileeditor', command)
-            self.assertNotIn('-VS2019', command)
-            self.assertEqual('-ubtargs=-2019 -NoHotReloadFromIDE' in command, policy['version'] == '4.26')
+            for configuration in validator.GAME_CONFIGURATIONS:
+                with self.subTest(version=policy['version'], configuration=configuration):
+                    command = validator.game_command(self.engine, self.project / 'Fixture.uproject', self.archive,
+                                                     policy, configuration)
+                    self.assertIn('-target=' + validator.PROJECT, command)
+                    self.assertEqual([arg for arg in command if arg.startswith('-clientconfig=')],
+                                     ['-clientconfig=' + configuration])
+                    self.assertIn('-cook', command)
+                    self.assertNotIn('-skipbuildeditor', command)
+                    self.assertIn('-nocompileeditor', command)
+                    self.assertNotIn('-VS2019', command)
+                    self.assertEqual('-ubtargs=-2019 -NoHotReloadFromIDE' in command, policy['version'] == '4.26')
             editor = validator.editor_command(self.engine, self.project / 'Fixture.uproject', policy,
                                               self.root / 'ubt-editor.log')
             self.assertIn(validator.PROJECT + 'Editor', editor)
+            self.assertEqual(editor[2:4], ['Win64', 'Development'])
             self.assertIn('-log=' + str(self.root / 'ubt-editor.log'), editor)
             self.assertEqual('-2019' in editor, policy['version'] == '4.26')
             self.assertEqual('-NoHotReloadFromIDE' in editor, policy['version'] != '4.18')
@@ -230,6 +299,67 @@ class PackagedGameGuards(unittest.TestCase):
                 self.assertEqual('BuildSettingsVersion.Latest' in text, version.startswith('5.'))
                 self.assertEqual('EngineIncludeOrderVersion.Latest' in text, version.startswith('5.'))
                 self.assertEqual('BuildSettingsVersion.V2' in text, version == '4.26')
+
+    def test_cook_selects_the_private_cache_graph_on_every_supported_engine(self):
+        for version in validator.preflight_engine.SUPPORTED_VERSIONS:
+            with self.subTest(version=version):
+                major, minor = map(int, version.split('.'))
+                policy = validator.preflight_engine.engine_policy({'MajorVersion': major, 'MinorVersion': minor})
+                command = validator.game_command(self.engine, self.project / 'Fixture.uproject', self.archive, policy)
+                self.assertEqual([arg for arg in command if arg.startswith('-AdditionalCookerOptions=')],
+                                 ['-AdditionalCookerOptions=-ddc=AuroraViewValidationDDC'])
+
+    def test_cache_graph_is_portable_writable_and_has_no_shared_store_or_path_overrides(self):
+        package = self.root / 'CachePackage'
+        package.mkdir()
+        for version in validator.preflight_engine.SUPPORTED_VERSIONS:
+            with self.subTest(version=version):
+                project = self.root / ('cache-' + version)
+                with patch.dict(validator.os.environ, {'UE-LocalDataCachePath': str(self.root / 'foreign-cache')}):
+                    receipt = validator.create_project(project, package, version)
+                config = project / 'Config/DefaultEngine.ini'
+                text = config.read_text(encoding='utf-8')
+                parser = configparser.RawConfigParser(strict=False)
+                parser.optionxform = str
+                parser.read_string(text)
+                if version == '5.8':
+                    self.assertEqual(parser['DerivedDataCacheGraphs']['AuroraViewValidationDDC'],
+                                     '(AuroraViewValidationLocal)')
+                    nodes = dict(parser['DerivedDataCacheStores'])
+                    self.assertEqual(set(nodes), {'AuroraViewValidationLocal'})
+                    local = nodes['AuroraViewValidationLocal']
+                else:
+                    nodes = dict(parser['AuroraViewValidationDDC'])
+                    self.assertEqual(set(nodes), {'Root', 'AsyncPut', 'Local'})
+                    self.assertEqual(nodes['Root'], '(Type=KeyLength,Length=120,Inner=AsyncPut)')
+                    self.assertEqual(nodes['AsyncPut'], '(Type=AsyncPut,Inner=Local)')
+                    self.assertIn('DeleteOnly=false', nodes['Local'])
+                    local = nodes['Local']
+                self.assertIn('Type=FileSystem', local)
+                self.assertIn('ReadOnly=false', local)
+                self.assertIn('Path="%GAMEDIR%DerivedDataCache"', local)
+                for external in ['Zen', 'Shared', 'Cloud', 'Override']:
+                    self.assertNotIn(external, '\n'.join(nodes.values()))
+                self.assertNotIn(str(project), text)
+                cache = project / 'DerivedDataCache'
+                self.assertTrue(cache.is_dir())
+                self.assertEqual(list(cache.iterdir()), [])
+                self.assertEqual(receipt['directory'], str(cache))
+                self.assertEqual(receipt['config_sha256'], validator.build_plugin.sha256(config))
+                self.assertEqual(receipt['writable_probe'], 'pass')
+                self.assertFalse((self.root / 'foreign-cache').exists())
+                packaging = configparser.RawConfigParser(strict=False)
+                packaging.read(project / 'Config/DefaultGame.ini', encoding='utf-8')
+                if version.startswith('5.'):
+                    self.assertFalse(packaging.getboolean('/Script/UnrealEd.ProjectPackagingSettings', 'bUseZenStore'))
+
+    def test_legacy_cache_path_limit_fails_before_native_cook_or_config_writes(self):
+        for version in ('4.18', '4.26'):
+            with self.subTest(version=version):
+                project = self.root / ('long-project-' + 'x' * 120)
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, '119 characters'):
+                    validator.configure_project_cache(project, version)
+                self.assertFalse(project.exists())
 
 
 class StagedExecutableGuards(unittest.TestCase):
@@ -250,6 +380,24 @@ class StagedExecutableGuards(unittest.TestCase):
 
     def evidence(self):
         return validator.staged_executable_evidence(self.project, self.staged, self.target, self.policy)
+
+    def test_shipping_preserves_only_the_narrow_ue418_resource_update(self):
+        shipping_compiled = self.compiled.with_name(validator.PROJECT + '-Win64-Shipping.exe')
+        shipping_staged = self.staged.with_name(shipping_compiled.name)
+        write(shipping_compiled, self.compiled.read_bytes())
+        write(shipping_staged, self.staged.read_bytes())
+        self.target.update(Configuration='Shipping', BuildProducts=[{'Type': 'Executable', 'Path': str(shipping_compiled)}])
+        result = validator.staged_executable_evidence(self.project, shipping_staged, self.target, self.policy, 'Shipping')
+        self.assertEqual(result['comparison'], 'ue418_resource_update')
+        self.target.pop('TargetType')
+        validator.staged_executable_evidence(self.project, shipping_staged, self.target, self.policy, 'Shipping')
+        with self.assertRaises(validator.build_plugin.BuildError):
+            validator.staged_executable_evidence(self.project, shipping_staged, self.target, self.policy, 'Development')
+        changed = bytearray(shipping_staged.read_bytes())
+        changed[0x210] ^= 1
+        write(shipping_staged, changed)
+        with self.assertRaises(validator.build_plugin.BuildError):
+            validator.staged_executable_evidence(self.project, shipping_staged, self.target, self.policy, 'Shipping')
 
     def test_identical_files_use_whole_file_comparison_on_every_supported_engine(self):
         write(self.staged, self.compiled.read_bytes())
@@ -480,6 +628,241 @@ class GameExecutionPolicyTests(unittest.TestCase):
                 self.assertIn('-Windowed', arguments)
                 self.assertNotIn('-NullRHI', arguments)
                 self.assertNotIn('-RenderOffscreen', arguments)
+
+
+class GameConfigurationFlowTests(unittest.TestCase):
+    """Synthetic pipeline contracts; no Editor, UAT or Game is launched."""
+    def flow(self, configuration, *, stage_configuration=None, runtime_configuration=None):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        engine, package, output = (root / name for name in ['Engine', 'Package', 'Output'])
+        engine.mkdir()
+        package.mkdir()
+        receipt_path = root / 'build-receipt.json'
+        write(receipt_path, '{}')
+        policy = validator.preflight_engine.engine_policy({'MajorVersion': 5, 'MinorVersion': 7})
+        receipt = {'engine': {'version': '5.7'}, 'source': {'sha': 'synthetic-source'},
+                   'package': {'files_sha256': {}}}
+
+        def stage(project, archive, _engine, _receipt, _policy, selected):
+            self.assertEqual(selected, configuration)
+            game = archive / f'Windows/{validator.PROJECT}/Binaries/Win64/{validator.executable_names(selected)[0]}'
+            write(game, executable())
+            digest = validator.build_plugin.sha256(game)
+            bound = stage_configuration or selected
+            return game, {'configuration': bound, 'target': {'Configuration': bound},
+                          'executable_sha256': digest, 'files_sha256': validator.inventory(archive)}
+
+        def run(exe, _evidence, version, timeout, rendered, **kwargs):
+            self.assertEqual((version, timeout, rendered), ('5.7', 30, False))
+            self.assertEqual(kwargs['configuration'], configuration)
+            self.assertEqual(kwargs['expected_sha256'], validator.build_plugin.sha256(exe))
+            return {'configuration': runtime_configuration or configuration, 'executable': str(exe),
+                    'executable_sha256': validator.build_plugin.sha256(exe)}
+
+        def logged(_command, _working, log, _environment, _timeout):
+            write(log, 'synthetic build log')
+
+        with patch.object(validator, 'os', SimpleNamespace(name='nt', environ={})), \
+                patch.object(validator, 'verify_inputs', return_value=(receipt_path, receipt, policy)), \
+                patch.object(validator, 'create_project', return_value={'shared_cache': False}), \
+                patch.object(validator, 'verify_package'), \
+                patch.object(validator.build_plugin, 'build_environment', return_value={}), \
+                patch.object(validator.build_plugin, 'configuration_inputs', return_value={}), \
+                patch.object(validator.build_plugin, 'compiler_evidence', return_value=[]), \
+                patch.object(validator, 'run_logged', side_effect=logged) as builds, \
+                patch.object(validator, 'stage_evidence', side_effect=stage), \
+                patch.object(validator, 'run_game', side_effect=run) as game:
+            result = validator.validate(engine, package, output, 30, configuration=configuration)
+        self.assertEqual(result['configuration'], configuration)
+        self.assertEqual(builds.call_count, 2)
+        self.assertEqual(builds.call_args_list[0].args[0][2:4], ['Win64', 'Development'])
+        self.assertIn('-clientconfig=' + configuration, builds.call_args_list[1].args[0])
+        recorded = json.loads((output / 'evidence/game-validation.json').read_text())
+        self.assertEqual(recorded['configuration'], configuration)
+        return result, game
+
+    def test_both_configurations_use_the_complete_same_game_runner_and_bind_receipt(self):
+        for configuration in validator.GAME_CONFIGURATIONS:
+            with self.subTest(configuration=configuration):
+                result, game = self.flow(configuration)
+                self.assertEqual(result['status'], 'passed')
+                self.assertIn('Cooked ' + configuration, result['scope'])
+                self.assertEqual(result['runtime']['configuration'], configuration)
+                game.assert_called_once()
+
+    def test_wrong_stage_configuration_is_refused_before_game_launch(self):
+        result, game = self.flow('Shipping', stage_configuration='Development')
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('Staged evidence differs', result['error'])
+        game.assert_not_called()
+
+    def test_wrong_process_configuration_cannot_pass_the_game_receipt(self):
+        result, _game = self.flow('Shipping', runtime_configuration='Development')
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('Game process evidence differs', result['error'])
+
+    def test_invalid_configuration_is_rejected_before_any_build_or_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(validator, 'verify_inputs') as verify, patch.object(validator, 'run_logged') as build:
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, 'Development or Shipping'):
+                    validator.validate(root / 'Engine', root / 'Package', root / 'Output', 30, configuration='Debug')
+                with self.assertRaises(validator.build_plugin.BuildError):
+                    validator.game_command(root, root, root, {'version': '5.7'}, 'Debug')
+            verify.assert_not_called()
+            build.assert_not_called()
+            self.assertFalse((root / 'Output').exists())
+        with patch.object(sys, 'argv', ['validate_game.py', '--engine-root', 'E', '--package', 'P',
+                                       '--output', 'O', '--configuration', 'Debug']), \
+                patch.object(validator, 'validate') as validate:
+            with self.assertRaises(SystemExit) as raised:
+                validator.main()
+            self.assertEqual(raised.exception.code, 2)
+            validate.assert_not_called()
+
+    def test_changed_or_wrong_configuration_executable_is_refused_before_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            game = root / (validator.PROJECT + '-Win64-Shipping.exe')
+            write(game, executable())
+            with patch.object(validator.subprocess, 'Popen') as launch:
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, 'selected configuration'):
+                    validator.run_game(game, root, '5.7', 30, configuration='Development')
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, 'changed after staged'):
+                    validator.run_game(game, root, '5.7', 30, configuration='Shipping', expected_sha256='0' * 64)
+            launch.assert_not_called()
+
+
+class GameCleanupTests(unittest.TestCase):
+    def test_initial_build_receipt_write_failure_still_stops_the_owned_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            process = Mock(pid=123, returncode=None)
+            process.poll.return_value = None
+
+            def wait(**_kwargs):
+                process.returncode = 1
+                return 1
+
+            process.wait.side_effect = wait
+            write_json = validator.write_json
+            calls = []
+
+            def write_receipt(path, value):
+                calls.append(path)
+                if len(calls) == 1:
+                    raise PermissionError('initial process receipt write failed')
+                write_json(path, value)
+
+            with patch.object(validator.subprocess, 'Popen', return_value=process), \
+                    patch.object(validator.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as kill, \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
+                    patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}), \
+                    patch.object(validator, 'write_json', side_effect=write_receipt):
+                with self.assertRaisesRegex(PermissionError, 'initial process receipt'):
+                    validator.run_logged(['synthetic-never-launched'], root, root / 'build.log', {}, 30)
+            self.assertEqual(kill.call_count, 1)
+            process.wait.assert_called_once_with(timeout=15)
+            receipt = json.loads((root / 'build.process.json').read_bytes())
+            self.assertEqual(receipt['exit_code'], 1)
+            self.assertTrue(receipt['completed_utc'])
+
+    def test_cleanup_failure_preserves_the_original_build_receipt_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            process = Mock(pid=123, returncode=None)
+            process.poll.return_value = None
+            cleanup_error = validator.subprocess.TimeoutExpired(['synthetic-never-launched'], 15)
+            process.wait.side_effect = cleanup_error
+            write_json = validator.write_json
+            calls = []
+
+            def write_receipt(path, value):
+                calls.append(path)
+                if len(calls) == 1:
+                    raise PermissionError('initial process receipt write failed')
+                write_json(path, value)
+
+            with patch.object(validator.subprocess, 'Popen', return_value=process), \
+                    patch.object(validator.subprocess, 'run', return_value=SimpleNamespace(returncode=1)), \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
+                    patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}), \
+                    patch.object(validator, 'write_json', side_effect=write_receipt):
+                with self.assertRaisesRegex(PermissionError, 'initial process receipt') as caught:
+                    validator.run_logged(['synthetic-never-launched'], root, root / 'build.log', {}, 30)
+            self.assertIs(caught.exception.__cause__, cleanup_error)
+            process.wait.assert_called_once_with(timeout=15)
+            receipt = json.loads((root / 'build.process.json').read_bytes())
+            self.assertIsNone(receipt['exit_code'])
+            self.assertTrue(receipt['completed_utc'])
+
+    def test_failed_forced_wait_preserves_host_failure_and_finalizes_redacted_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            executable_path = evidence / (validator.PROJECT + '-Win64-Shipping.exe')
+            write(executable_path, executable())
+            token = 'private-cleanup-fixture-token-' * 3
+            process = Mock(pid=123, returncode=None)
+            process.poll.return_value = None
+            process.wait.side_effect = validator.subprocess.TimeoutExpired(['Game.exe', token], 15)
+            client = Mock(identity={'pid': 123})
+            client.call.return_value = {}  # Reject the live identity before any mutation.
+            client.close.side_effect = TimeoutError('Client cleanup token=' + token)
+            api = SimpleNamespace(Client=Mock(return_value=client), ProtocolError=ValueError, RemoteError=RuntimeError)
+
+            def popen(_command, **kwargs):
+                kwargs['stdout'].write(token.encode())
+                (evidence / 'Game.log').write_text('Host command token=' + token, encoding='utf-8')
+                return process
+
+            with patch.dict(sys.modules, {'auroraview_unreal': api}), \
+                    patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}), \
+                    patch.object(validator.secrets, 'token_urlsafe', return_value=token), \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
+                    patch.object(validator.subprocess, 'Popen', popen), \
+                    patch.object(validator.subprocess, 'run', return_value=SimpleNamespace(returncode=1)):
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, 'Live Game engine identity'):
+                    validator.run_game(executable_path, evidence, '5.7', 30, configuration='Shipping')
+
+            process.wait.assert_called_once_with(timeout=15)
+            result = json.loads((evidence / 'game-process.json').read_text())
+            self.assertEqual(result['configuration'], 'Shipping')
+            self.assertEqual(result['executable_sha256'], validator.build_plugin.sha256(executable_path))
+            self.assertIn('Live Game engine identity', result['error'])
+            self.assertEqual(len(result['cleanup_errors']), 2)
+            self.assertTrue(result['forced_cleanup'])
+            self.assertIsNone(result['exit_code'])
+            self.assertTrue(result['completed_utc'])
+            for path in evidence.iterdir():
+                if path.suffix != '.exe':
+                    self.assertNotIn(token, path.read_text())
+
+    def test_launch_exception_does_not_expose_its_command_token(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            executable_path = evidence / (validator.PROJECT + '.exe')
+            write(executable_path, executable())
+            token = 'private-startup-fixture-token-' * 3
+            api = SimpleNamespace(Client=Mock(), ProtocolError=ValueError, RemoteError=RuntimeError)
+            failure = validator.subprocess.TimeoutExpired(['Game.exe', '-AuroraViewHostToken=' + token], 5)
+            with patch.dict(sys.modules, {'auroraview_unreal': api}), \
+                    patch.object(validator.secrets, 'token_urlsafe', return_value=token), \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
+                    patch.object(validator.subprocess, 'Popen', side_effect=failure):
+                with self.assertRaises(validator.build_plugin.BuildError) as raised:
+                    validator.run_game(executable_path, evidence, '5.7', 30)
+            self.assertNotIn(token, str(raised.exception))
+            self.assertTrue(raised.exception.__suppress_context__)
+            result = json.loads((evidence / 'game-process.json').read_text())
+            self.assertIn('<redacted>', result['error'])
+            self.assertTrue(result['completed_utc'])
+            self.assertNotIn(token, json.dumps(result))
 
 
 if __name__ == '__main__':

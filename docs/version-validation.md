@@ -22,4 +22,6 @@ Use a fresh private output and a passing BuildPlugin receipt for the exact curre
 
 Native CI runs Development and Shipping acceptance separately for every supported engine, using one matching plugin package and distinct fresh Game outputs. Shipping archives and compact receipts have separate artifact names; existing Development demo artifacts retain their configuration.
 
+Draft pull requests run the hosted source checks. Marking a same-repository pull request ready for review starts the native matrix on the self-hosted runner; updates to ready pull requests, pushes to `main` and manual dispatches also run it. A draft's source checks do not establish native or runtime acceptance.
+
 See [commands and CI](building.md), [architecture](architecture.md) and historical [acceptance evidence](acceptance.md). The exact installed engine's headers and actual build are authoritative for native APIs; online documentation alone is not compiler evidence.

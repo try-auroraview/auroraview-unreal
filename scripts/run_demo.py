@@ -199,23 +199,23 @@ def prepare(engine, package, output, mode, timeout, reuse):
     project.mkdir()
     cache = validate_game.create_project(project, package, version)
     uproject = project / f'{validate_game.PROJECT}.uproject'
-    environment = os.environ.copy()
-    environment.update(build_plugin.build_environment(policy, output))
-    before_config = build_plugin.configuration_inputs(engine)
-    command = validate_game.editor_command(engine, uproject, policy, output / 'ubt-editor.log')
-    print('Building demo Editor: ' + str(output / 'editor-build.log'), flush=True)
-    validate_game.run_logged(command, project, output / 'editor-build.log', environment, timeout)
-    stage = None
-    if mode == 'game':
-        command = validate_game.game_command(engine, uproject, output / 'PackagedGame', policy)
-        print('Cooking and packaging demo: ' + str(output / 'uat.log'), flush=True)
-        validate_game.run_logged(command, project, output / 'uat.log', environment, timeout)
-        executable, stage = validate_game.stage_evidence(project, output / 'PackagedGame', engine, receipt, policy)
-    else:
-        executable = engine / f'Engine/Binaries/Win64/{policy["editor_target"]}.exe'
-    after_config = build_plugin.configuration_inputs(engine)
-    if any(after_config.get(name) != digest for name, digest in before_config.items()):
-        raise build_plugin.BuildError('An existing UBT configuration changed during the build')
+    environment = build_plugin.child_build_environment(build_plugin.build_environment(policy, output))
+    with build_plugin.ubt_user_config_guard():
+        before_config = build_plugin.configuration_inputs(engine)
+        command = validate_game.editor_command(engine, uproject, policy, output / 'ubt-editor.log')
+        print('Building demo Editor: ' + str(output / 'editor-build.log'), flush=True)
+        validate_game.run_logged(command, project, output / 'editor-build.log', environment, timeout)
+        stage = None
+        if mode == 'game':
+            command = validate_game.game_command(engine, uproject, output / 'PackagedGame', policy)
+            print('Cooking and packaging demo: ' + str(output / 'uat.log'), flush=True)
+            validate_game.run_logged(command, project, output / 'uat.log', environment, timeout)
+            executable, stage = validate_game.stage_evidence(project, output / 'PackagedGame', engine, receipt, policy)
+        else:
+            executable = engine / f'Engine/Binaries/Win64/{policy["editor_target"]}.exe'
+        after_config = build_plugin.configuration_inputs(engine)
+        if any(after_config.get(name) != digest for name, digest in before_config.items()):
+            raise build_plugin.BuildError('An existing UBT configuration changed during the build')
     if build_plugin.git_identity(ROOT) != identity:
         raise build_plugin.BuildError('Source changed during demo preparation')
     products = {}

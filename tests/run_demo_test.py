@@ -12,6 +12,117 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import run_demo
 
 
+class DemoPrepareGuards(unittest.TestCase):
+    """Synthetic prepare-only contracts; no native helper or host is started."""
+    def prepare(self, mode, *, stale_marker=None, interrupt=False):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        engine, package, output = (root / name for name in ['Engine', 'Package', 'Output'])
+        for path in [engine, package, output]:
+            path.mkdir()
+        config = root / 'BuildConfiguration.xml'
+        original_config = b'<Configuration>user-owned</Configuration>'
+        config.write_bytes(original_config)
+        active = config.with_suffix('.xml.dcc-mcp-active')
+        if stale_marker:
+            config.with_suffix(stale_marker).write_bytes(b'preserve unfinished build')
+        receipt_path = root / 'build-receipt.json'
+        receipt_path.write_text('{}', encoding='utf-8')
+        policy = run_demo.preflight_engine.engine_policy({'MajorVersion': 5, 'MinorVersion': 7})
+        receipt = {'engine': {'version': '5.7'}}
+        identity = {'dirty': False, 'commit': 'synthetic-source', 'tree': 'synthetic-tree'}
+        executable = engine / 'Engine/Binaries/Win64/UnrealEditor.exe'
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b'synthetic executable fixture; never run')
+        parent = {'uebp_UATMutexNoWait': '1', 'UEBP_uatMUTEXnowait': 'yes', 'KEEP': 'parent'}
+        original_parent = parent.copy()
+        events = []
+
+        def assert_guard_held():
+            self.assertTrue(active.is_file())
+            with self.assertRaises(TimeoutError):
+                with run_demo.build_plugin.ubt_user_config_lock(config, timeout=0):
+                    pass
+
+        def snapshot(_engine):
+            assert_guard_held()
+            events.append('config-hash')
+            return {str(config): run_demo.build_plugin.sha256(config)}
+
+        def project(root, _package, _version):
+            (root / 'AuroraViewGameFixture.uproject').write_text('{}', encoding='utf-8')
+            for relative in ['Source', 'Config', 'Binaries', 'Plugins/AuroraView']:
+                (root / relative).mkdir(parents=True)
+            return {'shared_cache': False}
+
+        def logged(command, _working, log, environment, _timeout):
+            assert_guard_held()
+            self.assertFalse(any(name.casefold() == 'uebp_uatmutexnowait' for name in environment))
+            self.assertEqual(environment['KEEP'], 'parent')
+            self.assertEqual(parent, original_parent)
+            event = 'Build.bat' if command[0].endswith('Build.bat') else 'BuildCookRun'
+            events.append(event)
+            log.write_text('synthetic build log', encoding='utf-8')
+            if interrupt and event == 'BuildCookRun':
+                raise run_demo.build_plugin.BuildInterruptedError('Native build exceeded fixture timeout')
+
+        def stage(_project, archive, *_args):
+            assert_guard_held()
+            archive.mkdir()
+            game = archive / 'Game.exe'
+            game.write_bytes(b'synthetic executable fixture; never run')
+            return game, {'configuration': 'Development'}
+
+        with patch.object(run_demo.build_plugin.os, 'environ', parent), \
+                patch.object(run_demo.build_plugin, 'git_identity', return_value=identity), \
+                patch.object(run_demo.build_plugin, 'ubt_user_config_path', return_value=config), \
+                patch.object(run_demo.build_plugin, 'configuration_inputs', side_effect=snapshot), \
+                patch.object(run_demo, 'relocated_package', return_value=(receipt, policy, receipt_path)), \
+                patch.object(run_demo.validate_game, 'create_project', side_effect=project), \
+                patch.object(run_demo.validate_game, 'run_logged', side_effect=logged) as build, \
+                patch.object(run_demo.validate_game, 'stage_evidence', side_effect=stage), \
+                patch.object(run_demo.subprocess, 'Popen') as host:
+            if stale_marker:
+                with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'Unfinished UBT build'):
+                    run_demo.prepare(engine, package, output, mode, 30, False)
+                build.assert_not_called()
+                self.assertEqual(events, [])
+                self.assertEqual(config.with_suffix(stale_marker).read_bytes(), b'preserve unfinished build')
+            elif interrupt:
+                with self.assertRaisesRegex(run_demo.build_plugin.BuildInterruptedError, 'exceeded fixture timeout'):
+                    run_demo.prepare(engine, package, output, mode, 30, False)
+                self.assertEqual(events, ['config-hash', 'Build.bat', 'BuildCookRun'])
+                self.assertTrue(active.is_file())
+                with self.assertRaisesRegex(run_demo.build_plugin.BuildError, 'Unfinished UBT build'):
+                    with run_demo.build_plugin.ubt_user_config_guard():
+                        self.fail('interrupted prepare must block the next reader')
+                self.assertFalse((output / 'prepared-demo.json').exists())
+            else:
+                prepared = run_demo.prepare(engine, package, output, mode, 30, False)
+                self.assertEqual(events, ['config-hash', 'Build.bat'] +
+                                 (['BuildCookRun'] if mode == 'game' else []) + ['config-hash'])
+                self.assertEqual(prepared['status'], 'prepared')
+                self.assertEqual(prepared['ubt_configuration_sha256'], prepared['ubt_configuration_after_sha256'])
+                self.assertFalse(active.exists())
+            host.assert_not_called()
+        self.assertEqual(parent, original_parent)
+        self.assertEqual(config.read_bytes(), original_config)
+
+    def test_editor_and_game_prepare_hold_guard_through_both_config_hashes(self):
+        for mode in ['editor', 'game']:
+            with self.subTest(mode=mode):
+                self.prepare(mode)
+
+    def test_every_stale_journal_refuses_demo_preparation_before_native_helper(self):
+        for suffix in ['.xml.dcc-mcp-active', '.xml.dcc-mcp-backup', '.xml.dcc-mcp-new']:
+            with self.subTest(suffix=suffix):
+                self.prepare('game', stale_marker=suffix)
+
+    def test_interrupted_prepare_retains_marker_without_publishing_ready_or_starting_host(self):
+        self.prepare('game', interrupt=True)
+
+
 class DemoLaunchGuards(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()

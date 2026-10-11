@@ -632,7 +632,8 @@ class GameExecutionPolicyTests(unittest.TestCase):
 
 class GameConfigurationFlowTests(unittest.TestCase):
     """Synthetic pipeline contracts; no Editor, UAT or Game is launched."""
-    def flow(self, configuration, *, stage_configuration=None, runtime_configuration=None):
+    def flow(self, configuration, *, stage_configuration=None, runtime_configuration=None,
+             stale_marker=None, interrupt_at=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -644,8 +645,29 @@ class GameConfigurationFlowTests(unittest.TestCase):
         policy = validator.preflight_engine.engine_policy({'MajorVersion': 5, 'MinorVersion': 7})
         receipt = {'engine': {'version': '5.7'}, 'source': {'sha': 'synthetic-source'},
                    'package': {'files_sha256': {}}}
+        config = root / 'user-config/BuildConfiguration.xml'
+        original_config = b'<Configuration><CompilerVersion>user-owned</CompilerVersion></Configuration>'
+        write(config, original_config)
+        active = config.with_suffix('.xml.dcc-mcp-active')
+        if stale_marker:
+            config.with_suffix(stale_marker).write_bytes(b'preserve unfinished build')
+        events = []
+        parent_environment = {'uebp_UATMutexNoWait': '1', 'UEBP_uatMUTEXnowait': 'yes', 'KEEP': 'parent'}
+        original_environment = parent_environment.copy()
+
+        def assert_guard_held():
+            self.assertTrue(active.is_file())
+            with self.assertRaises(TimeoutError):
+                with validator.build_plugin.ubt_user_config_lock(config, timeout=0):
+                    pass
+
+        def configuration_snapshot(_engine):
+            assert_guard_held()
+            events.append('config-hash')
+            return {str(config): validator.build_plugin.sha256(config)}
 
         def stage(project, archive, _engine, _receipt, _policy, selected):
+            self.assertFalse(active.exists(), 'staging must follow guarded build/hash completion')
             self.assertEqual(selected, configuration)
             game = archive / f'Windows/{validator.PROJECT}/Binaries/Win64/{validator.executable_names(selected)[0]}'
             write(game, executable())
@@ -655,6 +677,7 @@ class GameConfigurationFlowTests(unittest.TestCase):
                           'executable_sha256': digest, 'files_sha256': validator.inventory(archive)}
 
         def run(exe, _evidence, version, timeout, rendered, **kwargs):
+            self.assertFalse(active.exists(), 'Game launch must follow guarded build/hash completion')
             self.assertEqual((version, timeout, rendered), ('5.7', 30, False))
             self.assertEqual(kwargs['configuration'], configuration)
             self.assertEqual(kwargs['expected_sha256'], validator.build_plugin.sha256(exe))
@@ -662,26 +685,74 @@ class GameConfigurationFlowTests(unittest.TestCase):
                     'executable_sha256': validator.build_plugin.sha256(exe)}
 
         def logged(_command, _working, log, _environment, _timeout):
+            assert_guard_held()
+            self.assertFalse(any(name.casefold() == 'uebp_uatmutexnowait' for name in _environment))
+            self.assertEqual(_environment['KEEP'], 'parent')
+            self.assertEqual(parent_environment, original_environment)
+            event = 'Build.bat' if _command[0].endswith('Build.bat') else 'BuildCookRun'
+            events.append(event)
             write(log, 'synthetic build log')
+            if interrupt_at == event:
+                timeout_error = validator.subprocess.TimeoutExpired(_command, _timeout)
+                raise validator.build_plugin.BuildInterruptedError(
+                    'Native build exceeded fixture timeout', primary_error=timeout_error) from timeout_error
 
         with patch.object(validator, 'os', SimpleNamespace(name='nt', environ={})), \
+                patch.object(validator.build_plugin.os, 'environ', parent_environment), \
                 patch.object(validator, 'verify_inputs', return_value=(receipt_path, receipt, policy)), \
                 patch.object(validator, 'create_project', return_value={'shared_cache': False}), \
                 patch.object(validator, 'verify_package'), \
                 patch.object(validator.build_plugin, 'build_environment', return_value={}), \
-                patch.object(validator.build_plugin, 'configuration_inputs', return_value={}), \
+                patch.object(validator.build_plugin, 'ubt_user_config_path', return_value=config), \
+                patch.object(validator.build_plugin, 'configuration_inputs', side_effect=configuration_snapshot), \
                 patch.object(validator.build_plugin, 'compiler_evidence', return_value=[]), \
                 patch.object(validator, 'run_logged', side_effect=logged) as builds, \
                 patch.object(validator, 'stage_evidence', side_effect=stage), \
                 patch.object(validator, 'run_game', side_effect=run) as game:
             result = validator.validate(engine, package, output, 30, configuration=configuration)
         self.assertEqual(result['configuration'], configuration)
+        self.assertEqual(parent_environment, original_environment)
+        self.assertEqual(config.read_bytes(), original_config)
+        if stale_marker:
+            builds.assert_not_called()
+            game.assert_not_called()
+            self.assertEqual(events, [])
+            self.assertEqual(config.with_suffix(stale_marker).read_bytes(), b'preserve unfinished build')
+            return result, game
+        if interrupt_at:
+            self.assertEqual(events, ['config-hash', 'Build.bat'] +
+                             (['BuildCookRun'] if interrupt_at == 'BuildCookRun' else []))
+            self.assertTrue(active.is_file())
+            game.assert_not_called()
+            with patch.object(validator.build_plugin, 'ubt_user_config_path', return_value=config):
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, 'Unfinished UBT build'):
+                    with validator.build_plugin.ubt_user_config_guard():
+                        self.fail('interrupted build must refuse the next reader')
+            return result, game
+        self.assertEqual(events, ['config-hash', 'Build.bat', 'BuildCookRun', 'config-hash'])
+        self.assertFalse(active.exists())
         self.assertEqual(builds.call_count, 2)
         self.assertEqual(builds.call_args_list[0].args[0][2:4], ['Win64', 'Development'])
         self.assertIn('-clientconfig=' + configuration, builds.call_args_list[1].args[0])
         recorded = json.loads((output / 'evidence/game-validation.json').read_text())
         self.assertEqual(recorded['configuration'], configuration)
         return result, game
+
+    def test_stale_shared_config_journals_block_both_builds_and_game(self):
+        for suffix in ['.xml.dcc-mcp-active', '.xml.dcc-mcp-backup', '.xml.dcc-mcp-new']:
+            with self.subTest(suffix=suffix):
+                result, game = self.flow('Shipping', stale_marker=suffix)
+                self.assertEqual(result['status'], 'failed')
+                self.assertIn('Unfinished UBT build', result['error'])
+                game.assert_not_called()
+
+    def test_interrupted_editor_or_cook_retains_marker_and_never_starts_game(self):
+        for phase in ['Build.bat', 'BuildCookRun']:
+            with self.subTest(phase=phase):
+                result, game = self.flow('Shipping', interrupt_at=phase)
+                self.assertEqual(result['status'], 'failed')
+                self.assertIn('Native build exceeded fixture timeout', result['error'])
+                game.assert_not_called()
 
     def test_both_configurations_use_the_complete_same_game_runner_and_bind_receipt(self):
         for configuration in validator.GAME_CONFIGURATIONS:
@@ -736,6 +807,44 @@ class GameConfigurationFlowTests(unittest.TestCase):
 
 
 class GameCleanupTests(unittest.TestCase):
+    def test_build_timeout_preserves_original_error_and_blocks_next_config_reader(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / 'BuildConfiguration.xml'
+            original = b'<Configuration>user-owned</Configuration>'
+            config.write_bytes(original)
+            process = Mock(pid=123, returncode=None)
+            process.poll.side_effect = lambda: process.returncode
+            timeout_error = validator.subprocess.TimeoutExpired(['synthetic-never-launched'], 30)
+
+            def wait(timeout):
+                if timeout == 30:
+                    raise timeout_error
+                process.returncode = 1
+                return 1
+
+            process.wait.side_effect = wait
+            with patch.object(validator.build_plugin, 'ubt_user_config_path', return_value=config), \
+                    patch.object(validator.subprocess, 'Popen', return_value=process), \
+                    patch.object(validator.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as stop, \
+                    patch.object(validator.subprocess, 'STARTUPINFO', return_value=SimpleNamespace(dwFlags=0), create=True), \
+                    patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
+                    patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}):
+                with self.assertRaisesRegex(validator.build_plugin.BuildInterruptedError, 'exceeded 30 seconds') as caught:
+                    with validator.build_plugin.ubt_user_config_guard():
+                        validator.run_logged(['synthetic-never-launched'], root, root / 'build.log', {}, 30)
+                self.assertIs(caught.exception.primary_error, timeout_error)
+                self.assertIs(caught.exception.__cause__, timeout_error)
+                self.assertTrue(config.with_suffix('.xml.dcc-mcp-active').is_file())
+                with self.assertRaisesRegex(validator.build_plugin.BuildError, 'Unfinished UBT build'):
+                    with validator.build_plugin.ubt_user_config_guard():
+                        self.fail('timed-out build must block the next reader')
+            stop.assert_called_once()
+            self.assertEqual(config.read_bytes(), original)
+            receipt = json.loads((root / 'build.process.json').read_text())
+            self.assertTrue(receipt['timed_out'])
+            self.assertEqual(receipt['exit_code'], 1)
+
     def test_initial_build_receipt_write_failure_still_stops_the_owned_process(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -792,9 +901,11 @@ class GameCleanupTests(unittest.TestCase):
                     patch.object(validator.subprocess, 'STARTF_USESHOWWINDOW', 1, create=True), \
                     patch.dict(validator.os.environ, {'SystemRoot': 'C:\\Windows'}), \
                     patch.object(validator, 'write_json', side_effect=write_receipt):
-                with self.assertRaisesRegex(PermissionError, 'initial process receipt') as caught:
+                with self.assertRaisesRegex(validator.build_plugin.BuildInterruptedError, 'initial process receipt') as caught:
                     validator.run_logged(['synthetic-never-launched'], root, root / 'build.log', {}, 30)
             self.assertIs(caught.exception.__cause__, cleanup_error)
+            self.assertIsInstance(caught.exception.primary_error, PermissionError)
+            self.assertEqual(str(caught.exception.primary_error), 'initial process receipt write failed')
             process.wait.assert_called_once_with(timeout=15)
             receipt = json.loads((root / 'build.process.json').read_bytes())
             self.assertIsNone(receipt['exit_code'])

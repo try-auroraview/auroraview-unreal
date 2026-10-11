@@ -236,7 +236,8 @@ def run_logged(command, working, log, environment, timeout):
                 raise build_plugin.BuildError(f'Native build exited {process.returncode}; see {log}')
         except subprocess.TimeoutExpired as error:
             process_receipt['timed_out'] = True
-            raise build_plugin.BuildError(f'Native build exceeded {timeout} seconds') from error
+            raise build_plugin.BuildInterruptedError(f'Native build exceeded {timeout} seconds',
+                                                    primary_error=error) from error
         finally:
             primary_error = sys.exc_info()[1]
             try:
@@ -247,8 +248,11 @@ def run_logged(command, working, log, environment, timeout):
                     write_json(path, process_receipt)
             except Exception as cleanup_error:
                 if primary_error is not None:
-                    raise primary_error from cleanup_error
-                raise
+                    if not isinstance(primary_error, Exception):
+                        raise primary_error from cleanup_error
+                    raise build_plugin.BuildInterruptedError(str(primary_error),
+                                                            primary_error=primary_error) from cleanup_error
+                raise build_plugin.BuildInterruptedError(str(cleanup_error)) from cleanup_error
 
 
 def editor_command(engine, project, policy, log_file):
@@ -727,21 +731,25 @@ def validate(engine_root, package_root, output_root, timeout, rendered_browser=F
         archive = output / 'PackagedGame'
         command = game_command(engine, project / f'{PROJECT}.uproject', archive, policy, configuration)
         overrides = build_plugin.build_environment(policy, output)
-        environment = os.environ.copy()
-        environment.update(overrides)
-        before_config = build_plugin.configuration_inputs(engine)
+        environment = build_plugin.child_build_environment(overrides)
         prepare_command = editor_command(engine, project / f'{PROJECT}.uproject', policy, output / 'ubt-editor.log')
-        result.update(environment_overrides=overrides, ubt_configuration_sha256=before_config,
-                      editor_build_command=prepare_command, build_command=command, packaged_game='failed')
-        write_json(result_path, result)
-        editor_log = output / 'editor-build.log'
-        print('Fixture Editor build log: ' + str(editor_log), flush=True)
-        run_logged(prepare_command, project, editor_log, environment, timeout)
-        result['editor_build_log_sha256'] = build_plugin.sha256(editor_log)
-        result['editor_compiler_toolchains'] = build_plugin.compiler_evidence(editor_log, policy)
-        log = output / 'uat.log'
-        print('BuildCookRun log: ' + str(log), flush=True)
-        run_logged(command, project, log, environment, timeout)
+        with build_plugin.ubt_user_config_guard():
+            before_config = build_plugin.configuration_inputs(engine)
+            result.update(environment_overrides=overrides, ubt_configuration_sha256=before_config,
+                          editor_build_command=prepare_command, build_command=command, packaged_game='failed')
+            write_json(result_path, result)
+            editor_log = output / 'editor-build.log'
+            print('Fixture Editor build log: ' + str(editor_log), flush=True)
+            run_logged(prepare_command, project, editor_log, environment, timeout)
+            result['editor_build_log_sha256'] = build_plugin.sha256(editor_log)
+            result['editor_compiler_toolchains'] = build_plugin.compiler_evidence(editor_log, policy)
+            log = output / 'uat.log'
+            print('BuildCookRun log: ' + str(log), flush=True)
+            run_logged(command, project, log, environment, timeout)
+            after_config = build_plugin.configuration_inputs(engine)
+            result['ubt_configuration_after_sha256'] = after_config
+            if any(after_config.get(path) != digest for path, digest in before_config.items()):
+                raise build_plugin.BuildError('An existing UBT configuration changed during Game validation')
         result['uat_log_sha256'] = build_plugin.sha256(log)
         result['compiler_toolchains'] = build_plugin.compiler_evidence(log, policy)
         executable, stage = stage_evidence(project, archive, engine, package_receipt, policy, configuration)
@@ -764,10 +772,6 @@ def validate(engine_root, package_root, output_root, timeout, rendered_browser=F
         verify_inputs(engine, package)
         if build_plugin.sha256(receipt_path) != result['build_receipt_sha256']:
             raise build_plugin.BuildError('Package build receipt changed during validation')
-        after_config = build_plugin.configuration_inputs(engine)
-        result['ubt_configuration_after_sha256'] = after_config
-        if any(after_config.get(path) != digest for path, digest in before_config.items()):
-            raise build_plugin.BuildError('An existing UBT configuration changed during Game validation')
         scope = 'Cooked ' + configuration + ' Win64 Game, native control and external Python tools'
         if rendered_browser:
             result['rendered_browser'] = 'pass'

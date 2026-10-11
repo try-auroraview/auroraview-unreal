@@ -2,6 +2,23 @@
 
 The stdlib-only `auroraview_unreal` client supports Python 3.9+ independently of Unreal's embedded Python. Install with `uv pip install ./python`, or add `python/` to PYTHONPATH. See [the complete example](../examples/python_tools.py).
 
+## Shared tool declarations
+
+The optional extra consumes the [public 0.1.0 tool-contract preview](https://github.com/try-auroraview/auroraview/releases/tag/auroraview-dcc-mcp-v0.1.0-preview.1). Its wheel URL and SHA-256 are pinned in `python/pyproject.toml`:
+
+```powershell
+uv pip install "./python[dcc-mcp]"
+python scripts/run_demo.py --engine-root "C:\Program Files\Epic Games\UE_5.7" --mode editor --shared-tools --output "C:\AuroraViewDemo\SharedEditor"
+```
+
+The same option works in Game mode. Installation is explicit; launching the demo never downloads packages. An offline bundle's default provider needs only Python's standard library; `--shared-tools` additionally requires the optional package and its dependencies.
+
+`auroraview_unreal.native_tools.NativeToolBinding(client, tools, dispatch=owner_dispatcher)` consumes a public `ToolSet` through `borrow()`. Call `register()` to publish its descriptors, `subscribe(event, callback)` for removable host events, and `close()` to release this binding. Input/output schemas and annotation hints remain in discovery. `Client.bind_tool(descriptor, handler)` also provides a scoped registration handle; closing an old handle cannot unregister a later replacement.
+
+Construct the tool owner and binding on the same thread. The caller's dispatcher accepts a zero-argument callable and returns `concurrent.futures.Future`; the caller pumps its existing owner loop and respects cancellation before executing queued work. Host event sources must deliver on that owner thread too. The adapter creates no scheduler or service. A timed-out queued call is cancelled; a handler already executing completes cooperatively.
+
+Bind panels to borrowed sessions and leave server lifetime with its owner. `tools.attach(existing_server)` operates on an existing same-process DCC-MCP Core object; it does not connect an external client to the Editor's server. See [the ownership and GameThread boundaries](demo-architecture.md#shared-dcc-mcp-backend-boundary).
+
 Enable AuroraView in the target project/game, then supply an unused port and private token with at least 32 characters:
 
 ```text

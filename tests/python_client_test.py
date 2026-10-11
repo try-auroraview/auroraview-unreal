@@ -10,6 +10,7 @@ import time
 import unittest
 import uuid
 from concurrent.futures import Future
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
@@ -204,6 +205,24 @@ class PythonClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Client(1234, TOKEN, host="localhost")
 
+    def test_nonfinite_connection_timeout_rejected_before_connect(self):
+        for duration in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(timeout=duration), mock.patch(
+                    "auroraview_unreal.client.socket.create_connection",
+                    side_effect=AssertionError("Invalid timeout reached the transport")) as connect:
+                with self.assertRaises(ValueError):
+                    Client(1234, TOKEN, timeout=duration)
+                connect.assert_not_called()
+
+    def test_nonfinite_call_timeout_does_not_dispatch_or_consume_pending_slot(self):
+        with Peer() as host, Client(host.port, TOKEN, max_pending=1) as client:
+            for duration in (float("nan"), float("inf"), float("-inf")):
+                with self.subTest(timeout=duration), self.assertRaises(ValueError):
+                    client.call_async("test.wait", timeout=duration)
+            self.assertEqual(client.call("test.echo", 42, timeout=0.5), 42)
+            self.assertEqual(host.calls.get(timeout=1)["method"], "test.echo")
+            self.assertTrue(host.calls.empty())
+
     def test_core_calls_preserve_parameter_shape_and_errors(self):
         with Peer() as host, Client(host.port, TOKEN) as client:
             self.assertEqual(client.call("test.echo"), {"absent": True})
@@ -259,6 +278,67 @@ class PythonClientTests(unittest.TestCase):
             with self.assertRaises(RemoteError):
                 client.bind_call("python.denied", lambda: "must not run")
             self.assertEqual(host.reverse("python.denied").result(2)["error"]["code"], "METHOD_NOT_FOUND")
+
+    def test_explicit_contract_preserves_schemas_annotations_and_ownership(self):
+        descriptor = {"name": "python.explicit", "description": "An explicit shared contract.",
+                      "inputSchema": {"type": "object", "properties": {"value": {"type": "boolean"}},
+                                      "required": ["value"], "additionalProperties": False},
+                      "outputSchema": {"type": "boolean"},
+                      "annotations": {"readOnlyHint": True, "destructiveHint": False,
+                                      "idempotentHint": True}, "extension": {"version": 1}}
+        original = copy.deepcopy(descriptor)
+        with Peer() as host, Client(host.port, TOKEN) as client:
+            handler = lambda value: value
+            first = client.bind_tool(descriptor, handler)
+            self.assertEqual(host.registrations[-1], dict(original, parameters=original["inputSchema"]))
+            self.assertEqual(descriptor, original)
+            descriptor["inputSchema"]["required"].clear()
+            self.assertEqual(host.registrations[-1]["inputSchema"]["required"], ["value"])
+            self.assertIs(host.reverse("python.explicit", {"value": False}).result(2)["result"], False)
+            second = client.bind_tool(original, handler, allow_rebind=True)
+            first.close()
+            first.close()
+            self.assertIn("python.explicit", host.tools)
+            self.assertIs(host.reverse("python.explicit", {"value": True}).result(2)["result"], True)
+            second.close()
+            self.assertNotIn("python.explicit", host.tools)
+            self.assertEqual(host.reverse("python.explicit", {}).result(2)["error"]["code"], "METHOD_NOT_FOUND")
+
+    def test_explicit_handle_cannot_remove_legacy_replacement_and_survives_disconnect(self):
+        descriptor = {"name": "python.explicit", "description": "Read a value.", "inputSchema": {"type": "object"}}
+        with Peer() as host, Client(host.port, TOKEN) as client:
+            handle = client.bind_tool(descriptor, lambda: "old")
+            client.bind_call("python.explicit", lambda: "new")
+            handle.close()
+            self.assertEqual(host.reverse("python.explicit", {}).result(2)["result"], "new")
+            owned = client.bind_tool(dict(descriptor, name="python.other"), lambda: None)
+            client.close()
+            owned.close()
+            owned.close()
+
+    def test_explicit_contract_validation_and_registration_failure(self):
+        descriptor = {"name": "python.explicit", "description": "Read a value.", "inputSchema": {"type": "object"}}
+        with Peer(reject_registration=True) as host, Client(host.port, TOKEN) as client:
+            for change in ({"inputSchema": []}, {"description": ""}, {"outputSchema": []},
+                           {"annotations": {"readOnlyHint": "yes"}}, {"parameters": {}},
+                           {"inputSchema": {"enum": [float("nan")]}}, {"extension": {1: "non-string key"}}):
+                with self.subTest(change=change), self.assertRaises((ValueError, TypeError)):
+                    client.bind_tool(dict(descriptor, **change), lambda: None)
+            with self.assertRaises(RemoteError):
+                client.bind_tool(descriptor, lambda: "must not run")
+            self.assertEqual(host.reverse("python.explicit", {}).result(2)["error"]["code"], "METHOD_NOT_FOUND")
+
+    def test_explicit_native_unregistration_failure_can_be_retried(self):
+        descriptor = {"name": "python.explicit", "description": "Read a value.", "inputSchema": {"type": "object"}}
+        with Peer() as host, Client(host.port, TOKEN) as client:
+            handle = client.bind_tool(descriptor, lambda: "still owned")
+            with mock.patch.object(client, "call", side_effect=TimeoutError("Native unregister unavailable")):
+                with self.assertRaisesRegex(TimeoutError, "Native unregister unavailable"):
+                    handle.close()
+            self.assertEqual(host.reverse("python.explicit", {}).result(2)["result"], "still owned")
+            handle.close()
+            handle.close()
+            self.assertNotIn("python.explicit", host.tools)
 
     def test_events_are_bidirectional_and_callbacks_can_call(self):
         with Peer() as host, Client(host.port, TOKEN) as client:

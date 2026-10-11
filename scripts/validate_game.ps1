@@ -6,14 +6,15 @@ param(
     [Parameter(Mandatory = $true)][string]$Output,
     [ValidateRange(30, 86400)][int]$TimeoutSeconds = 1800,
     [string]$Python = 'python',
-    [switch]$RenderedBrowser
+    [switch]$RenderedBrowser,
+    [ValidateSet('Development', 'Shipping')][string]$Configuration = 'Development'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $pythonExe = (Get-Command -Name $Python -CommandType Application -ErrorAction Stop).Source
 $arguments = @((Join-Path $PSScriptRoot 'validate_game.py'), '--engine-root', $EngineRoot,
-    '--package', $Package, '--output', $Output, '--timeout', $TimeoutSeconds)
+    '--package', $Package, '--output', $Output, '--timeout', $TimeoutSeconds, '--configuration', $Configuration)
 if ($RenderedBrowser) { $arguments += '--rendered-browser' }
 & $pythonExe @arguments
 if ($LASTEXITCODE -ne 0) { throw "Packaged Game validation failed with exit code $LASTEXITCODE; evidence: $Output" }

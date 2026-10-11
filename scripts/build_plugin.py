@@ -5,6 +5,8 @@ Uses only the installed engine and Python's standard library. A passing build
 receipt proves compilation and package integrity, not Editor/UI acceptance.
 """
 import argparse
+import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -13,6 +15,7 @@ import re
 import struct
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
@@ -35,6 +38,14 @@ DLL = 'UnrealEditor-AuroraViewEditor.dll'
 
 class BuildError(Exception):
     """A required build or evidence contract was not satisfied."""
+
+
+class BuildInterruptedError(BuildError):
+    """Build descendants may still be running after interruption or cleanup failure."""
+
+    def __init__(self, message, *, primary_error=None):
+        super().__init__(message)
+        self.primary_error = primary_error
 
 
 def sha256(path):
@@ -264,11 +275,19 @@ def build_environment(policy, output):
     return overrides
 
 
+def child_build_environment(overrides):
+    environment = os.environ.copy()
+    environment.update(overrides)
+    for name in tuple(environment):
+        if name.casefold() == 'uebp_uatmutexnowait':
+            environment.pop(name)
+    return environment
+
+
 def run_uat(command, source, log_path, environment_overrides):
     if os.name != 'nt':
         raise BuildError('Native Win64 compilation requires a Windows host')
-    environment = os.environ.copy()
-    environment.update(environment_overrides)
+    environment = child_build_environment(environment_overrides)
     with log_path.open('wb') as log:
         result = subprocess.run(command, cwd=source, env=environment,
                                 stdout=log, stderr=subprocess.STDOUT, check=False)
@@ -307,6 +326,83 @@ def package_evidence(package, assets, engine_build_id, policy):
             'descriptor': descriptor, 'modules': modules}
 
 
+def ubt_user_config_path():
+    if os.name == 'nt':
+        import ctypes
+        folder = ctypes.create_unicode_buffer(32768)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 0x1A, None, 0, folder) != 0 or not folder.value:
+            raise BuildError('Cannot resolve the ApplicationData folder used by UnrealBuildTool')
+        appdata = folder.value
+    else:
+        appdata = os.environ.get('APPDATA')
+    return Path(appdata) / 'Unreal Engine/UnrealBuildTool/BuildConfiguration.xml' if appdata else None
+
+
+@contextlib.contextmanager
+def ubt_user_config_lock(config_path, timeout=120):
+    """Use the same account resource lock as DCC-MCP's UBT configuration guard."""
+    lock_path = config_path.with_name('dcc-mcp-build.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a+b') as handle:
+        if handle.seek(0, os.SEEK_END) == 0:
+            handle.write(b'\0')
+            handle.flush()
+        deadline = time.monotonic() + timeout
+        while True:
+            handle.seek(0)
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f'Timed out waiting for UBT user config lock: {lock_path}') from error
+                time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == 'nt':
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def ubt_user_config_guard(timeout=120):
+    """Protect config readers without replacing or clearing the user XML."""
+    config_path = ubt_user_config_path()
+    if config_path is None:
+        yield
+        return
+    backup_path = config_path.with_suffix('.xml.dcc-mcp-backup')
+    pending_path = config_path.with_suffix('.xml.dcc-mcp-new')
+    active_path = config_path.with_suffix('.xml.dcc-mcp-active')
+    with ubt_user_config_lock(config_path, timeout):
+        if any(path.exists() for path in (backup_path, pending_path, active_path)):
+            raise BuildError('Unfinished UBT build; stop its UAT children before reconciling '
+                             f'{config_path} and {backup_path}')
+        with active_path.open('xb') as handle:
+            handle.write(b'Build in progress; stop UAT children before recovering this transaction.\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        clear_active = True
+        try:
+            yield
+        except BaseException as error:
+            clear_active = isinstance(error, Exception) and not isinstance(error, BuildInterruptedError)
+            raise
+        finally:
+            if clear_active:
+                active_path.unlink()
+
+
 def configuration_inputs(engine):
     """Record existing UBT configuration without changing engine/user files."""
     directories = [engine / 'Engine/Saved/UnrealBuildTool',
@@ -314,10 +410,10 @@ def configuration_inputs(engine):
                    engine / 'Engine/Restricted/NotForLicensees/Programs/UnrealBuildTool']
     if os.name == 'nt':
         import ctypes
-        for folder_id in [0x1A, 0x05]:  # Actual .NET ApplicationData / Personal locations.
-            buffer = ctypes.create_unicode_buffer(32768)
-            if ctypes.windll.shell32.SHGetFolderPathW(None, folder_id, None, 0, buffer) == 0 and buffer.value:
-                directories.append(Path(buffer.value) / 'Unreal Engine/UnrealBuildTool')
+        directories.append(ubt_user_config_path().parent)
+        buffer = ctypes.create_unicode_buffer(32768)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 0x05, None, 0, buffer) == 0 and buffer.value:
+            directories.append(Path(buffer.value) / 'Unreal Engine/UnrealBuildTool')
     files = {}
     for directory in directories:
         path = directory / 'BuildConfiguration.xml'
@@ -463,7 +559,6 @@ def build(engine_root, output, source_root=ROOT, expected_version=None, require_
         policy = preflight_engine.engine_policy(version)
         receipt['target'] = f'UE {policy["version"]} Win64 Editor and Runtime'
         receipt['environment_overrides'] = build_environment(policy, output)
-        receipt['ubt_configuration_sha256'] = configuration_inputs(engine)
         engine_modules_path = engine / f'Engine/Binaries/Win64/{policy["editor_target"]}.modules'
         engine_modules = read_json(engine_modules_path)
         build_id = engine_modules.get('BuildId')
@@ -487,13 +582,20 @@ def build(engine_root, output, source_root=ROOT, expected_version=None, require_
         receipt['build_command'] = command
         receipt['uat_log'] = str(log_path)
         print('Native build log: ' + str(log_path), flush=True)
-        receipt['unreal_compile'] = 'failed'
-        receipt['unreal_game_compile'] = 'failed'
-        receipt['uat_exit_code'] = run_uat(command, source, log_path, receipt['environment_overrides'])
-        if log_path.is_file():
-            receipt['uat_log_sha256'] = sha256(log_path)
-        if receipt['uat_exit_code'] != 0:
-            raise BuildError(f'RunUAT failed with exit code {receipt["uat_exit_code"]}; see {log_path}')
+        with ubt_user_config_guard():
+            receipt['ubt_configuration_sha256'] = configuration_inputs(engine)
+            receipt['unreal_compile'] = 'failed'
+            receipt['unreal_game_compile'] = 'failed'
+            receipt['uat_exit_code'] = run_uat(command, source, log_path, receipt['environment_overrides'])
+            if log_path.is_file():
+                receipt['uat_log_sha256'] = sha256(log_path)
+            if receipt['uat_exit_code'] != 0:
+                raise BuildError(f'RunUAT failed with exit code {receipt["uat_exit_code"]}; see {log_path}')
+            configuration_after = configuration_inputs(engine)
+            receipt['ubt_configuration_after_sha256'] = configuration_after
+            if any(configuration_after.get(path) != digest
+                   for path, digest in receipt['ubt_configuration_sha256'].items()):
+                raise BuildError('An existing UBT configuration changed during the build')
         receipt['compiler_toolchains'] = compiler_evidence(log_path, policy)
         receipt['compiler_evidence_status'] = 'recorded' if receipt['compiler_toolchains'] else 'not_logged_by_legacy_ubt'
         host = output / 'HostProject'
@@ -505,10 +607,6 @@ def build(engine_root, output, source_root=ROOT, expected_version=None, require_
         receipt['uat_child_logs_sha256'] = {
             path.relative_to(output).as_posix(): sha256(path)
             for path in (output / 'uat-logs').rglob('*') if path.is_file()}
-        configuration_after = configuration_inputs(engine)
-        receipt['ubt_configuration_after_sha256'] = configuration_after
-        if any(configuration_after.get(path) != digest for path, digest in receipt['ubt_configuration_sha256'].items()):
-            raise BuildError('An existing UBT configuration changed during the build')
         if git_identity(source) != receipt['source']:
             raise BuildError('Source Git identity or working files changed during the build')
         if (sha256(version_path) != receipt['engine']['version_sha256'] or

@@ -2,9 +2,11 @@
 
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/TabManager.h"
 #include "Misc/CoreDelegates.h"
 #include "Runtime/Launch/Resources/Version.h"
+#include "Widgets/Docking/SDockTab.h"
 
 // The build matrix is an explicit admission contract, not a claim that every
 // intermediate engine or a different platform has been validated.
@@ -14,6 +16,16 @@
 
 namespace AuroraViewCompatibility
 {
+inline TSharedPtr<SWindow> FindTabWindow(const TSharedPtr<SDockTab>& Tab)
+{
+    // FTabManager::RestoreArea_Helper intentionally omits an embedded primary
+    // area's ParentWindow unless it embeds title content (UE4 and UE5). Thus
+    // SDockTab::GetParentWindow is not its actual host. Resolve live widget
+    // ancestry instead; an unadopted/closed tab has no inferred owner fallback.
+    return Tab.IsValid() && FSlateApplication::IsInitialized()
+        ? FSlateApplication::Get().FindWidgetWindow(Tab.ToSharedRef()) : TSharedPtr<SWindow>();
+}
+
 inline FSimpleMulticastDelegate& PostEngineInit()
 {
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8

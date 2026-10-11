@@ -1,0 +1,11 @@
+{
+  "FileVersion": 3,
+  "Category": "AuroraView examples",
+  "Description": "AuroraView native scene and external Python tools demo. Generated targets select the installed Unreal Engine version.",
+  "Modules": [
+    { "Name": "AuroraViewGameFixture", "Type": "Runtime", "LoadingPhase": "Default" }
+  ],
+  "Plugins": [
+    { "Name": "AuroraView", "Enabled": true }
+  ]
+}

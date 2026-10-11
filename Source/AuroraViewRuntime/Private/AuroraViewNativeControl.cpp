@@ -11,6 +11,9 @@
 #include "UObject/StructOnScope.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UnrealType.h"
+#if WITH_EDITOR
+#include "UObject/Script.h"
+#endif
 
 namespace
 {
@@ -97,7 +100,13 @@ FAuroraViewReply Call(UObject* Object, UFunction* Function, const TSharedPtr<FJs
         const FString Key(Pair.Key.Len(), *Pair.Key);
         if (!InputNames.Contains(Key)) return ControlError(TEXT("INVALID_PARAMS"), TEXT("Unknown argument: ") + Key);
     }
-    Object->ProcessEvent(Function, Memory);
+    {
+#if WITH_EDITOR
+        // Idle Editor actors suppress ProcessEvent without this scoped permission.
+        FEditorScriptExecutionGuard ScriptGuard;
+#endif
+        Object->ProcessEvent(Function, Memory);
+    }
     auto Result = MakeShared<FJsonObject>();
     auto Outputs = MakeShared<FJsonObject>();
     for (TFieldIterator<FControlProperty> It(Function); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)

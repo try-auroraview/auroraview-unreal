@@ -11,6 +11,11 @@ license = "MIT"
 license-files = ["auroraview_unreal/LICENSE"]
 dependencies = []
 
+[project.optional-dependencies]
+dcc-mcp = [
+  "auroraview-dcc-mcp[core] @ https://github.com/try-auroraview/auroraview/releases/download/auroraview-dcc-mcp-v0.1.0-preview.1/auroraview_dcc_mcp-0.1.0-py3-none-any.whl#sha256=450b74fd7c11c9247f076b456197a4c5b299c9edb34f851fda5ccc5cf1bf3558",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["auroraview_unreal*"]

@@ -39,11 +39,25 @@ def main():
     module = (ROOT / 'Source/AuroraViewRuntime/Private/AuroraViewRuntimeModule.cpp').read_text()
     for marker in ['CloseBrowser(true, false)', 'UnbindUObject(', 'RemoveTicker(',
                    'PreExit().Remove(', 'Mailbox->Stop()', '__auroraview_call_result',
-                   'check(IsInGameThread())', 'Request.bIsMainFrame', 'NavigationUsed->exchange(true)',
+                   'check(IsInGameThread())', 'Request.bIsMainFrame', 'Request.bIsRedirect',
+                   'Mailbox->IsCurrent(Epoch)', 'DocumentStartup->AllowNavigation(',
                    'frame-src \'none\'', 'connect-src \'none\'']:
         assert marker in module, marker
     assert 'AsyncTask(' not in module
     checks.append('native_lifecycle_and_navigation_source_guards')
+    startup = (ROOT / 'Source/AuroraViewRuntime/Private/BrowserDocumentStartup.h').read_text()
+    assert 'class BrowserDocumentStartup final' in startup
+    assert '#include "BrowserDocumentStartup.h"' in module
+    load = module[module.index('    void LoadPendingDocument()'):module.index('    void Emit(')]
+    assert load.index('Mailbox->IsCurrent(Generation)') < load.index('BeginOwnedDocument(') < load.index('->LoadString(')
+    assert 'BrowserToLoad->GetUrl() == TEXT("about:blank") && BrowserToLoad->IsLoaded()' in load
+    assert load.index('FPlatformTime::Seconds() > ReadyDeadline') < load.index('BeginOwnedDocument(')
+    assert module.count('->LoadString(') == 1
+    assert 'Session->ReadyDeadline = FPlatformTime::Seconds() + 10.0;' in module
+    dispose = module[module.index('    void Dispose('):module.index('    void Pump()')]
+    assert dispose.index('DocumentStartup->Close()') < dispose.index('MoveTemp(Browser)')
+    assert dispose.index('PendingDocument.Empty()') < dispose.index('MoveTemp(Browser)')
+    checks.append('single_owned_document_after_initial_frame_source_guard')
     endpoint = (ROOT / 'Source/AuroraViewRuntime/Private/AuroraViewEndpoint.cpp').read_text()
     assert 'Mailbox->Push(Generation' in endpoint and 'Token != SessionToken' in endpoint
     assert 'Mailbox->PushControl(Generation, AuroraView::SessionMailbox::Kind::Ready)' in endpoint

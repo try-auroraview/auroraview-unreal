@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -60,6 +61,13 @@ def coff_archive():
     return b'!<arch>\n' + member + object_bytes
 
 
+def assert_config_lock_held(test, config):
+    test.assertTrue(config.with_suffix('.xml.dcc-mcp-active').is_file())
+    with test.assertRaises(TimeoutError):
+        with builder.ubt_user_config_lock(config, timeout=0):
+            pass
+
+
 class BuildEnvironmentTests(unittest.TestCase):
     def test_modern_uat_enables_ipv6_without_changing_runner_environment(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -76,6 +84,84 @@ class BuildEnvironmentTests(unittest.TestCase):
     def test_legacy_uat_keeps_its_existing_network_environment(self):
         self.assertNotIn('DOTNET_SYSTEM_NET_DISABLEIPV6',
                          builder.build_environment({'version': '4.18'}, ROOT))
+
+    def test_uat_child_removes_all_no_wait_variants_without_mutating_parent(self):
+        parent = {'uebp_UATMutexNoWait': '1', 'UEBP_uatMUTEXnowait': 'yes', 'KEEP': 'parent'}
+        original = parent.copy()
+        overrides = {'UeBp_UaTmUtExNoWaIt': 'true', 'CHILD_ONLY': 'value'}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(builder, 'os', SimpleNamespace(name='nt', environ=parent)), \
+                    patch.object(builder.subprocess, 'run') as run:
+                run.return_value.returncode = 0
+                self.assertEqual(builder.run_uat(['synthetic-never-launched'], root, root / 'uat.log', overrides), 0)
+            child = run.call_args.kwargs['env']
+        self.assertFalse(any(name.casefold() == 'uebp_uatmutexnowait' for name in child))
+        self.assertEqual(child['KEEP'], 'parent')
+        self.assertEqual(child['CHILD_ONLY'], 'value')
+        self.assertEqual(parent, original)
+        self.assertIn('UeBp_UaTmUtExNoWaIt', overrides)
+
+
+class UbtConfigurationGuardTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.config = Path(temporary.name) / 'BuildConfiguration.xml'
+        self.original = b'<Configuration><CompilerVersion>user-owned</CompilerVersion></Configuration>'
+        self.config.write_bytes(self.original)
+        resolver = patch.object(builder, 'ubt_user_config_path', return_value=self.config)
+        resolver.start()
+        self.addCleanup(resolver.stop)
+
+    def test_reader_never_rewrites_config_and_cleans_active_marker(self):
+        for present in [True, False]:
+            with self.subTest(config_present=present):
+                if not present:
+                    self.config.unlink()
+                with builder.ubt_user_config_guard():
+                    assert_config_lock_held(self, self.config)
+                    self.assertEqual(self.config.read_bytes() if present else None, self.original if present else None)
+                    self.assertEqual(self.config.exists(), present)
+                self.assertFalse(self.config.with_suffix('.xml.dcc-mcp-active').exists())
+                self.assertEqual(self.config.exists(), present)
+                for suffix in ['.xml.dcc-mcp-backup', '.xml.dcc-mcp-new']:
+                    self.assertFalse(self.config.with_suffix(suffix).exists())
+
+    def test_normal_exception_releases_marker_without_changing_config(self):
+        with self.assertRaisesRegex(RuntimeError, 'ordinary build failure'):
+            with builder.ubt_user_config_guard():
+                raise RuntimeError('ordinary build failure')
+        self.assertEqual(self.config.read_bytes(), self.original)
+        self.assertFalse(self.config.with_suffix('.xml.dcc-mcp-active').exists())
+
+    def test_cancellation_and_unproved_build_cleanup_keep_marker_and_refuse_next_reader(self):
+        for error in [KeyboardInterrupt(), SystemExit(17), builder.BuildInterruptedError('unproved build cleanup')]:
+            with self.subTest(error=type(error).__name__):
+                active = self.config.with_suffix('.xml.dcc-mcp-active')
+                with self.assertRaises(type(error)):
+                    with builder.ubt_user_config_guard():
+                        raise error
+                retained = active.read_bytes()
+                self.assertTrue(retained)
+                with self.assertRaisesRegex(builder.BuildError, 'Unfinished UBT build'):
+                    with builder.ubt_user_config_guard():
+                        self.fail('unfinished build must not enter the next reader')
+                self.assertEqual(active.read_bytes(), retained)
+                self.assertEqual(self.config.read_bytes(), self.original)
+                active.unlink()
+
+    def test_every_existing_transaction_marker_refuses_without_reconciliation(self):
+        for suffix in ['.xml.dcc-mcp-active', '.xml.dcc-mcp-backup', '.xml.dcc-mcp-new']:
+            with self.subTest(suffix=suffix):
+                marker = self.config.with_suffix(suffix)
+                marker.write_bytes(b'original recovery evidence')
+                with self.assertRaisesRegex(builder.BuildError, 'Unfinished UBT build'):
+                    with builder.ubt_user_config_guard():
+                        self.fail('stale transaction must be refused before entering')
+                self.assertEqual(marker.read_bytes(), b'original recovery evidence')
+                self.assertEqual(self.config.read_bytes(), self.original)
+                marker.unlink()
 
 
 class BuildPluginTests(unittest.TestCase):
@@ -134,6 +220,12 @@ class BuildPluginTests(unittest.TestCase):
         self.mutate_after_uat = None
         self.uat_exit_code = 0
         self.uat_log = TOOLCHAIN_LOG
+        self.user_config = self.root / 'user-config/BuildConfiguration.xml'
+        self.user_config_bytes = b'<Configuration><CompilerVersion>user-owned</CompilerVersion></Configuration>'
+        write(self.user_config, self.user_config_bytes)
+        self.build_events = []
+        patch.object(builder, 'ubt_user_config_path', return_value=self.user_config).start()
+        patch.object(builder, 'configuration_inputs', side_effect=self.configuration_snapshot).start()
         self.runner = patch.object(builder, 'run_uat', side_effect=self.fake_uat).start()
         self.addCleanup(patch.stopall)
 
@@ -142,7 +234,14 @@ class BuildPluginTests(unittest.TestCase):
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         return process.stdout.decode('utf-8').strip()
 
+    def configuration_snapshot(self, _engine):
+        assert_config_lock_held(self, self.user_config)
+        self.build_events.append('config-hash')
+        return {str(self.user_config): builder.sha256(self.user_config)}
+
     def fake_uat(self, command, source, log_path, environment_overrides):
+        assert_config_lock_held(self, self.user_config)
+        self.build_events.append('BuildPlugin')
         package = Path(next(value[len('-Package='):] for value in command if value.startswith('-Package=')))
         self.assertFalse(package.exists(), 'UAT must receive a fresh package destination')
         package.mkdir()
@@ -227,8 +326,30 @@ class BuildPluginTests(unittest.TestCase):
         self.assertIn('-StrictIncludes', receipt['build_command'])
         self.assertIn('-TargetPlatforms=Win64', receipt['build_command'])
         self.assertEqual(receipt['uat_exit_code'], 0)
+        self.assertEqual(self.build_events, ['config-hash', 'BuildPlugin', 'config-hash'])
+        self.assertEqual(self.user_config.read_bytes(), self.user_config_bytes)
+        self.assertFalse(self.user_config.with_suffix('.xml.dcc-mcp-active').exists())
         for name, digest in receipt['source_assets_sha256'].items():
             self.assertEqual(receipt['package']['files_sha256'][name], digest)
+
+    def test_stale_shared_config_journal_refuses_before_hash_or_uat(self):
+        for index, suffix in enumerate(['.xml.dcc-mcp-active', '.xml.dcc-mcp-backup', '.xml.dcc-mcp-new']):
+            with self.subTest(suffix=suffix):
+                self.output = self.root / f'stale-{index}'
+                marker = self.user_config.with_suffix(suffix)
+                marker.write_bytes(b'preserve unfinished build')
+                self.assert_failed(self.build(), 'Unfinished UBT build')
+                self.runner.assert_not_called()
+                self.assertEqual(self.build_events, [])
+                self.assertEqual(marker.read_bytes(), b'preserve unfinished build')
+                self.assertEqual(self.user_config.read_bytes(), self.user_config_bytes)
+                marker.unlink()
+
+    def test_config_change_during_uat_is_reported_without_overwriting_user_edit(self):
+        self.mutate_after_uat = lambda: self.user_config.write_bytes(b'<Configuration>user edit</Configuration>')
+        self.assert_failed(self.build(), 'An existing UBT configuration changed')
+        self.assertEqual(self.user_config.read_bytes(), b'<Configuration>user edit</Configuration>')
+        self.assertFalse(self.user_config.with_suffix('.xml.dcc-mcp-active').exists())
 
     def test_dirty_source_is_explicit_and_hash_bound(self):
         write(self.source / 'Source/AuroraViewEditor/Fixture.cpp', '// changed fixture\n')

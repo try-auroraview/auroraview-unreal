@@ -20,7 +20,7 @@ New-Item -ItemType Directory -Force -Path $EvidenceDirectory | Out-Null
 $version | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $EvidenceDirectory 'engine-version.json')
 # Run after creating/saving a new empty project map and copying the freshly
 # built plugin package. No -NullRHI: this suite includes actual CEF widgets.
-$args = @($Project, $FixtureMap, ('-AuroraViewFixtureMap=' + $FixtureMap), '-AuroraViewAllowFixtureMutations', '-NoSplash', '-Windowed',
+$args = @($Project, $FixtureMap, ('-AuroraViewFixtureMap=' + $FixtureMap), '-AuroraViewAllowFixtureMutations', '-AuroraViewAllowControl', '-NoSplash', '-Windowed',
     '-ExecCmds=Automation RunTests AuroraView.', '-TestExit=Automation Test Queue Empty',
     ('-ReportExportPath=' + (Join-Path $EvidenceDirectory 'automation')),
     ('-abslog=' + (Join-Path $EvidenceDirectory 'UnrealEditor-acceptance.log')))

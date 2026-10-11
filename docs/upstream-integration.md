@@ -6,6 +6,33 @@ on 2026-10-08. It distinguishes merged abstractions from functioning native
 backends. The separately pinned JavaScript asset revision remains recorded in
 `ThirdParty/AuroraViewCore/manifest.json`.
 
+## Upstream update on 2026-10-11
+
+Upstream `main` at
+[`167f7ec`](https://github.com/try-auroraview/auroraview/tree/167f7ec87c6bc90259205c79bedcfa266ed84988)
+is 29 commits ahead of the historical `cde69c8` audit retained below.
+
+- The SDK source now exports
+  [`inject/event-bridge`](https://github.com/try-auroraview/auroraview/blob/167f7ec87c6bc90259205c79bedcfa266ed84988/packages/auroraview-sdk/package.json#L9),
+  with a normal tsup build and
+  [package-external conformance checks](https://github.com/try-auroraview/auroraview/blob/167f7ec87c6bc90259205c79bedcfa266ed84988/packages/auroraview-sdk/scripts/check_package.mjs#L118).
+  A shared native CEF bundle containing the complete `event_bridge`,
+  `bridge_stub` and version/hash manifest remains undelivered.
+- The Rust
+  [factory](https://github.com/try-auroraview/auroraview/blob/167f7ec87c6bc90259205c79bedcfa266ed84988/crates/auroraview-core/src/backend/factory.rs#L113),
+  contract and Python backend registry have no implementation changes from
+  `cde69c8`. Real surface factory registration and Wry/Tao dependency wiring
+  remain required.
+- `auroraview-dcc-mcp` has extracted the pure Python
+  [`Tool`/`ToolSet` borrow, bind and attach layer](https://github.com/try-auroraview/auroraview/blob/167f7ec87c6bc90259205c79bedcfa266ed84988/packages/auroraview-dcc-mcp/python/auroraview_dcc_mcp/runtime.py#L269),
+  which this Unreal integration already reuses. A generic Client for connection,
+  authentication, deadlines, calls and events remains unextracted;
+  [native composition](https://github.com/try-auroraview/auroraview/blob/167f7ec87c6bc90259205c79bedcfa266ed84988/packages/auroraview-dcc-mcp/docs/native-clients.md#L3)
+  is an application example.
+
+These source changes do not establish a new package publication or native host
+acceptance. Unreal's bundled asset manifest remains pinned to `11b3a29a`.
+
 ## Existing upstream contracts
 
 The upstream already established the dependency direction needed by individual
@@ -71,7 +98,7 @@ metadata adapter as that implementation.
 |---|---|---|
 | 1. Publish the shared wire/asset contract | Export the bridge assets, versioned manifest and call/result/event conformance fixtures as a reusable distribution. Document parent IPC's named-event extension mechanism. | Consume pinned hashes and run the same fixtures against the native CEF transport. Keep the Unreal bootstrap small. |
 | 2. Wire the existing backend registry | Register an actual surface factory together with availability; route `BackendFactory` through that registry. Preserve deprecated enum shims during migration. | Prove that a selected backend can create and close a surface, or provide a structured unsupported answer before selection. |
-| 3. Separate the portable Python tool layer | Extract reusable connection/call/event/tool registration behavior without importing Qt, a DCC SDK or a native extension at import time. Keep host identity and negotiated extensions explicit. | Retain Unreal launch flags, native method names and engine identity checks in `auroraview_unreal`; reuse a shared client only after conformance tests cover both. |
+| 3. Reuse portable tools, then extract a shared Client | Reuse the existing `auroraview-dcc-mcp` `Tool`/`ToolSet` borrow/bind/attach layer first. Extract reusable connection, authentication, deadline, call and event behavior without importing Qt, a DCC SDK or a native extension at import time. Keep host identity and negotiated extensions explicit. | Retain Unreal launch flags, native method names and engine identity checks in `auroraview_unreal`; reuse a shared Client only after conformance tests cover both. |
 | 4. Move host implementations behind registration | Move each host's discovery, dispatch and embedding implementation to its adapter package. Let compatibility shims delegate to the registry. | Qt DCCs may share proven Qt lifecycle utilities. Unreal keeps C++/Slate and GameThread ownership; other native hosts keep their own lifecycle rules. |
 
 The first useful extraction is a consumable contract and asset distribution,

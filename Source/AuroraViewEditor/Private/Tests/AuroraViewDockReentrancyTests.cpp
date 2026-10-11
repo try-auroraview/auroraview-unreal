@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "AuroraViewEditorModule.h"
 #include "AuroraViewCompatibility.h"
+#include "Dom/JsonObject.h"
 #include "Framework/Docking/TabManager.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
@@ -20,6 +21,7 @@ struct FReentrantState
     double Deadline = 0;
     uint64 IndependentGeneration = 0;
     bool bDirectFactoryRemoved = false;
+    bool bReportedPresentations = false;
     TSharedPtr<SDockTab> RetiredDirectTab;
 };
 class FWaitForReentrantDock final : public IAutomationLatentCommand
@@ -29,6 +31,22 @@ public:
     bool Update() override
     {
         auto& Module = FModuleManager::GetModuleChecked<FAuroraViewEditorModule>(TEXT("AuroraViewEditor"));
+        const auto ReportPresentations = [this]()
+        {
+            auto& Runtime = FModuleManager::GetModuleChecked<FAuroraViewRuntimeModule>(TEXT("AuroraViewRuntime"));
+            for (const FName Id : { GrowId, IndependentId, ReplaceId, ReopenId })
+            {
+                const auto Native = Runtime.DescribeView(Id);
+                Test->AddInfo(FString::Printf(TEXT("Reentrant presentation id=%s generation=%.0f open=%d ready=%d nativeWindow=%s"),
+                    *Id.ToString(), Native->GetNumberField(TEXT("generation")), Native->GetBoolField(TEXT("open")),
+                    Native->GetBoolField(TEXT("ready")), *Native->GetStringField(TEXT("window_native_handle"))));
+            }
+        };
+        if (!State->bReportedPresentations)
+        {
+            ReportPresentations();
+            State->bReportedPresentations = true;
+        }
         bool bRetiredTabsGone = true;
         for (const FName Id : { CloseId, ReplaceId, ReopenId, DirectId })
             bRetiredTabsGone &= !FGlobalTabmanager::Get()->FindExistingLiveTab(FName(*(TEXT("AuroraView.View.") + Id.ToString()))).IsValid();
@@ -37,6 +55,7 @@ public:
         const bool bReady = Module.IsReady(GrowId) && Module.IsReady(IndependentId)
             && Module.IsReady(ReplaceId) && Module.IsReady(ReopenId);
         if ((!bReady || !bRetiredTabsGone || !bDirectRetired) && FPlatformTime::Seconds() < State->Deadline) return false;
+        if (!bReady || !bRetiredTabsGone || !bDirectRetired) ReportPresentations();
         Test->TestTrue(TEXT("Current presentations reach actual native CEF readiness"), bReady);
         Test->TestTrue(TEXT("Interrupted factories leave no orphan live tabs"), bRetiredTabsGone);
         Test->TestTrue(TEXT("Direct Slate invocation executed the removing factory"), State->bDirectFactoryRemoved);

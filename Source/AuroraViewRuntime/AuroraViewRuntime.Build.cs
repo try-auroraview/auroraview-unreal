@@ -9,6 +9,7 @@ public class AuroraViewRuntime : ModuleRules {
         string PluginRoot = Path.GetFullPath(Path.Combine(ModuleDirectory, "../.."));
         foreach (string RelativeFile in new[] {
             "Resources/ue_transport.js", "Resources/ue_bootstrap.js", "Resources/demo.html", "Resources/native_showcase.html",
+            "Resources/live_demo.html",
             "Resources/legacy/event_bridge.js", "Resources/legacy/bridge_stub.js", "Resources/legacy/manifest.json",
             "ThirdParty/AuroraViewCore/event_bridge.js", "ThirdParty/AuroraViewCore/bridge_stub.js",
             "ThirdParty/AuroraViewCore/LICENSE", "ThirdParty/AuroraViewCore/manifest.json"
